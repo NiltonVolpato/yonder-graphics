@@ -1,0 +1,13 @@
+[package]
+name = "yonder-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Oriented projective math core (T^2 and T^3) for yonder-graphics"
+
+[dependencies]
+
+[dev-dependencies]

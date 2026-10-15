@@ -1,0 +1,14 @@
+[package]
+name = "yonder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Hardware-true unified oriented-projective rendering engine"
+
+[dependencies]
+yonder-core = { workspace = true }
+yonder-damage = { workspace = true }
+yonder-raster = { workspace = true }

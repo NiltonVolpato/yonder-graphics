@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/yonder-core",
+    "crates/yonder-damage",
+    "crates/yonder-raster",
+    "crates/yonder",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Nilton", "Yonder Graphics Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nilton/yonder-graphics"
+readme = "README.md"
+rust-version = "1.80"
+
+[workspace.dependencies]
+yonder-core = { path = "crates/yonder-core" }
+yonder-damage = { path = "crates/yonder-damage" }
+yonder-raster = { path = "crates/yonder-raster" }

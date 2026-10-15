@@ -1,0 +1,12 @@
+[package]
+name = "yonder-raster"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Scratchpad viewport rasterizer and local SIMD blending for yonder-graphics"
+
+[dependencies]
+yonder-core = { workspace = true }
