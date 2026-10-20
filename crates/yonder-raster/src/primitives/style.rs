@@ -12,6 +12,7 @@ pub struct CompositingStyle<C> {
     pub stroke_alpha: Option<u8>,
     pub stroke_width: u32,
     pub stroke_alignment: StrokeAlignment,
+    pub antialiased: bool,
 }
 
 impl<C> Default for CompositingStyle<C> {
@@ -24,11 +25,19 @@ impl<C> Default for CompositingStyle<C> {
             stroke_alpha: None,
             stroke_width: 0,
             stroke_alignment: StrokeAlignment::Center,
+            antialiased: false,
         }
     }
 }
 
 impl<C: PixelColor> CompositingStyle<C> {
+    /// Configures whether primitive edges are rendered with subpixel antialiasing.
+    #[inline]
+    pub const fn with_antialiasing(mut self, antialiased: bool) -> Self {
+        self.antialiased = antialiased;
+        self
+    }
+
     /// Creates a style with a solid opaque fill color.
     #[inline]
     pub const fn with_fill(color: C) -> Self {
@@ -39,6 +48,7 @@ impl<C: PixelColor> CompositingStyle<C> {
             stroke_alpha: None,
             stroke_width: 0,
             stroke_alignment: StrokeAlignment::Center,
+            antialiased: false,
         }
     }
 
@@ -52,6 +62,7 @@ impl<C: PixelColor> CompositingStyle<C> {
             stroke_alpha: None,
             stroke_width: 0,
             stroke_alignment: StrokeAlignment::Center,
+            antialiased: false,
         }
     }
 
@@ -65,6 +76,7 @@ impl<C: PixelColor> CompositingStyle<C> {
             stroke_alpha: Some(255),
             stroke_width: width,
             stroke_alignment: StrokeAlignment::Center,
+            antialiased: false,
         }
     }
 
@@ -78,6 +90,7 @@ impl<C: PixelColor> CompositingStyle<C> {
             stroke_alpha: Some(alpha),
             stroke_width: width,
             stroke_alignment: StrokeAlignment::Center,
+            antialiased: false,
         }
     }
 }
@@ -92,6 +105,7 @@ impl<C: PixelColor> From<PrimitiveStyle<C>> for CompositingStyle<C> {
             stroke_alpha: style.stroke_color.map(|_| 255),
             stroke_width: style.stroke_width,
             stroke_alignment: style.stroke_alignment,
+            antialiased: false,
         }
     }
 }

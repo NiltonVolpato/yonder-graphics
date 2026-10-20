@@ -30,6 +30,21 @@ impl Rect {
         self.width == 0 || self.height == 0
     }
 
+    /// Returns a new rectangle dilated outward by `amount` pixels on all four sides.
+    #[inline(always)]
+    pub const fn dilate(&self, amount: u32) -> Self {
+        if self.is_empty() {
+            return *self;
+        }
+        let a = amount as i32;
+        Self {
+            x: self.x - a,
+            y: self.y - a,
+            width: self.width + 2 * amount,
+            height: self.height + 2 * amount,
+        }
+    }
+
     /// Returns the rightmost horizontal edge coordinate ($x + \text{width}$).
     #[inline(always)]
     pub const fn right(&self) -> i32 {
@@ -157,5 +172,15 @@ mod tests {
         // Empty bounding box cases
         assert_eq!(Rect::ZERO.bounding_box(&r1), r1);
         assert_eq!(r1.bounding_box(&Rect::ZERO), r1);
+    }
+
+    #[test]
+    fn test_rect_dilate() {
+        let r = Rect::new(10, 10, 20, 30);
+        let dilated = r.dilate(1);
+        assert_eq!(dilated, Rect::new(9, 9, 22, 32));
+
+        let empty = Rect::ZERO;
+        assert_eq!(empty.dilate(1), Rect::ZERO);
     }
 }

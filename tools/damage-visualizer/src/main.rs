@@ -72,6 +72,7 @@ fn blit_2x(src: &[u32], dst: &mut [u32]) {
 fn render_scene<T: CompositingTarget<Color = Rgb888>>(
     target: &mut T,
     frame: usize,
+    antialiased: bool,
 ) -> Result<(), T::Error> {
     // 1. Solid background clear
     target.clear(COLOR_BG)?;
@@ -152,23 +153,26 @@ fn render_scene<T: CompositingTarget<Color = Rgb888>>(
     // Ground contact shadow (alpha-blended Conic ellipse)
     if shadow_rx > 0 {
         Conic::ellipse(BALL_X, FLOOR_Y + 4, shadow_rx, 5)
-            .into_styled(CompositingStyle::with_fill_alpha(
-                COLOR_BALL_SHADOW,
-                shadow_alpha,
-            ))
+            .into_styled(
+                CompositingStyle::with_fill_alpha(COLOR_BALL_SHADOW, shadow_alpha)
+                    .with_antialiasing(antialiased),
+            )
             .draw(target)?;
     }
 
     // Main bouncing ball (Conic ellipse dynamically transitioning to circle)
     Conic::ellipse(BALL_X, center_y, rx, ry)
-        .into_styled(CompositingStyle::with_fill(COLOR_BALL))
+        .into_styled(CompositingStyle::with_fill(COLOR_BALL).with_antialiasing(antialiased))
         .draw(target)?;
 
     // Specular highlight on ball
     let spec_rx = (rx / 4).max(3);
     let spec_ry = (ry / 4).max(3);
     Conic::ellipse(BALL_X - rx / 3, center_y - ry / 3, spec_rx, spec_ry)
-        .into_styled(CompositingStyle::with_fill_alpha(COLOR_BALL_SPECULAR, 190))
+        .into_styled(
+            CompositingStyle::with_fill_alpha(COLOR_BALL_SPECULAR, 190)
+                .with_antialiasing(antialiased),
+        )
         .draw(target)?;
 
     // 5. Rotating projective triangle needle
@@ -216,6 +220,7 @@ struct VisualizerApp {
     // Application state
     frame: usize,
     playing: bool,
+    antialiased: bool,
     show_grid: bool,
     show_coalesce: bool,
     last_frame_instant: Instant,
@@ -237,6 +242,7 @@ impl VisualizerApp {
             surface: None,
             frame: 0,
             playing: true,
+            antialiased: true,
             show_grid: true,
             show_coalesce: true,
             last_frame_instant: now,
@@ -288,13 +294,18 @@ impl VisualizerApp {
         // -----------------------------------------------------------------
         // PASS 1: Spatial Damage Pass
         // -----------------------------------------------------------------
-        render_scene(&mut grid.as_target::<Rgb888>(), self.frame).unwrap();
+        render_scene(
+            &mut grid.as_target::<Rgb888>(),
+            self.frame,
+            self.antialiased,
+        )
+        .unwrap();
 
         // -----------------------------------------------------------------
         // PASS 2: Viewport Base Scene Pass
         // -----------------------------------------------------------------
         let mut viewport = Viewport::<Rgb888>::new(&mut self.canvas, bounds);
-        render_scene(&mut viewport, self.frame).unwrap();
+        render_scene(&mut viewport, self.frame, self.antialiased).unwrap();
 
         // Collect dirty tile coordinates
         let mut dirty_tiles = Vec::with_capacity(TOTAL_TILES);
@@ -371,30 +382,33 @@ impl VisualizerApp {
         let _ = viewport.blend_solid(&hud_banner, COLOR_HUD_BG, 220);
 
         let status = if self.playing { "PLAY" } else { "PAUSE" };
+        let aa_tag = if self.antialiased { "AA:ON" } else { "AA:OFF" };
         let dirty_pct = (dirty_count as f64 / TOTAL_TILES as f64) * 100.0;
         let hud_text = format!(
-            "F:{:04} {:4.1}FPS D:{}/{} ({:.0}%) R:{} [{}]",
+            "F:{:04} {:4.1}FPS D:{}/{} ({:.0}%) R:{} [{}] [{}]",
             self.frame,
             self.current_fps,
             dirty_count,
             TOTAL_TILES,
             dirty_pct,
             coalesced_count,
-            status
+            status,
+            aa_tag,
         );
         let text_style = MonoTextStyle::new(&FONT_6X10, COLOR_HUD_TEXT);
         let _ = Text::new(&hud_text, Point::new(12, 18), text_style).draw(&mut viewport);
 
         // Terminal telemetry line
         print!(
-            "\r[Yonder Visualizer] Frame: {:04} | FPS: {:4.1} | Dirty: {:2}/{} ({:4.1}%) | Rects: {:2} | {:5}   ",
+            "\r[Yonder Visualizer] Frame: {:04} | FPS: {:4.1} | Dirty: {:2}/{} ({:4.1}%) | Rects: {:2} | {:5} | {:6}   ",
             self.frame,
             self.current_fps,
             dirty_count,
             TOTAL_TILES,
             dirty_pct,
             coalesced_count,
-            status
+            status,
+            aa_tag,
         );
         let _ = std::io::stdout().flush();
 
@@ -494,6 +508,12 @@ impl ApplicationHandler for VisualizerApp {
                         w.request_redraw();
                     }
                 }
+                Key::Character(ref ch) if ch.eq_ignore_ascii_case("a") => {
+                    self.antialiased = !self.antialiased;
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
                 Key::Character(ref ch) if ch.eq_ignore_ascii_case("r") => {
                     self.reset();
                     if let Some(w) = self.window.as_ref() {
@@ -540,6 +560,7 @@ fn main() {
     println!("  Left Arrow  : Step backward 1 frame (pauses)");
     println!("  G           : Toggle 16x16 tile grid & dirty heatmap");
     println!("  C           : Toggle coalesced rectangle wireframes");
+    println!("  A           : Toggle subpixel antialiasing (AA)");
     println!("  R           : Reset animation to frame 0");
     println!("================================");
 
@@ -558,7 +579,7 @@ mod tests {
         let mut grid = storage.as_grid();
 
         for frame in 0..200 {
-            render_scene(&mut grid.as_target::<Rgb888>(), frame).unwrap();
+            render_scene(&mut grid.as_target::<Rgb888>(), frame, true).unwrap();
             let mut count = 0;
             coalesce_dirty_rects(&mut grid, |_rect| {
                 count += 1;
@@ -605,22 +626,22 @@ mod tests {
         // Airborne frame (frame 20)
         {
             let mut viewport = Viewport::<Rgb888>::new(&mut canvas, bounds);
-            render_scene(&mut viewport, 20).unwrap();
+            render_scene(&mut viewport, 20, true).unwrap();
             assert_ne!(viewport.buffer()[0], 0); // Background cleared
         }
 
         // Impact & squash frame (frame 62)
         {
             let mut viewport = Viewport::<Rgb888>::new(&mut canvas, bounds);
-            render_scene(&mut viewport, 62).unwrap();
+            render_scene(&mut viewport, 62, true).unwrap();
             assert_ne!(viewport.buffer()[0], 0);
         }
 
         // DamageGrid pass on both frames
         let mut storage = DamageGridStorage360x360::new();
         let mut grid = storage.as_grid();
-        render_scene(&mut grid.as_target::<Rgb888>(), 20).unwrap();
-        render_scene(&mut grid.as_target::<Rgb888>(), 62).unwrap();
+        render_scene(&mut grid.as_target::<Rgb888>(), 20, true).unwrap();
+        render_scene(&mut grid.as_target::<Rgb888>(), 62, true).unwrap();
     }
 
     #[test]
