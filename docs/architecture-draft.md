@@ -1,5 +1,9 @@
 # Architecture Blueprint: A Unified Oriented-Projective 2D/3D Rendering Engine
 
+**WARNING: AI generated. This document could be incorrect, inconsistent, and
+confabulated. It is a synthesis of an architectural brainstorming session.
+This warning can be removed after it's reviewed.**
+
 ## Motivation: Why This Changes the Paradigm
 
 Traditional embedded graphics stacks are built on an unstable compromise. They typically choose between two flawed extremes:
