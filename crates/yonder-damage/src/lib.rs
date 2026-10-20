@@ -12,8 +12,11 @@ pub use coalesce::{
 };
 pub use grid::{
     DamageGrid, DamageGridStorage, DamageGridStorage128x128, DamageGridStorage240x240,
-    DamageGridStorage320x240,
+    DamageGridStorage320x240, DamageGridStorage360x360, DamageTarget,
 };
-pub use hash::{hash_accumulate, make_primitive_token};
+pub use hash::{
+    hash_accumulate, hash_solid, TileHasher, TOOL_ID_CONTIGUOUS, TOOL_ID_PIXEL_ITER, TOOL_ID_SHAPE,
+    TOOL_ID_SOLID_RECT,
+};
 pub use rect::Rect;
 pub use stream::{slice_rect_to_bands, stream_dirty_bands};

@@ -5,8 +5,9 @@
 //! $(x, y, w) \equiv (-x, -y, -w)$, oriented projective space preserves signs,
 //! treating the two antipodal directions as distinct front and rear universes.
 
-use crate::gcd::{normalize_quad_i32, normalize_triple_i32};
 use core::cmp::Ordering;
+
+use crate::gcd::{normalize_quad_i32, normalize_triple_i32};
 
 /// A homogeneous coordinate triple `[x, y, w]` in oriented projective 2-space $\mathbb{T}^2$.
 ///

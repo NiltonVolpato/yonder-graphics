@@ -21,3 +21,4 @@ yonder-core = { path = "crates/yonder-core" }
 yonder-damage = { path = "crates/yonder-damage" }
 yonder-raster = { path = "crates/yonder-raster" }
 embedded-graphics-core = "0.4.1"
+embedded-graphics = { version = "0.8.2", default-features = false }

@@ -1,7 +1,7 @@
 //! Projective maps of $\mathbb{T}_2$ and $\mathbb{T}_3$ into themselves ($\mathcal{M}_2$ and $\mathcal{M}_3$).
 //!
 //! Following Jorge Stolfi's definition of projective maps (Section 8, Definition 1):
-//! A linear map $M$ induces a projective map $[\![M]\!]$ of oriented projective space $\mathbb{T}_\nu$
+//! A linear map $M$ induces a projective map $[\!\[M\]\!]$ of oriented projective space $\mathbb{T}_\nu$
 //! to itself ($\mathcal{M}_\nu$).
 //!
 //! Unlike classical unoriented projective groups ($\mathrm{PGL}$) where $M$ and $-M$ are identified,

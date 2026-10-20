@@ -3,8 +3,9 @@
 //! Evaluated with exact 128-bit integer arithmetic to prevent topological
 //! inconsistency, cracks between adjacent edges, or floating-point rounding errors.
 
-use crate::coord::Coord3;
 use core::cmp::Ordering;
+
+use crate::coord::Coord3;
 
 /// Geometric orientation of an ordered triple of points $(\mathbf{p}, \mathbf{q}, \mathbf{r})$
 /// in oriented projective space $\mathbb{T}^2$.

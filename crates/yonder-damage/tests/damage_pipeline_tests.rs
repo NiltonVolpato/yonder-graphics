@@ -1,4 +1,4 @@
-use yonder_damage::{make_primitive_token, stream_dirty_bands, DamageGridStorage320x240, Rect};
+use yonder_damage::{stream_dirty_bands, DamageGridStorage320x240, Rect, TileHasher};
 
 #[test]
 fn test_collision_absorption_via_closing() {
@@ -45,7 +45,11 @@ fn test_multi_frame_damage_lifecycle() {
 
     // Frame 2: Static scene with zero changes
     // Re-draw same scene state: touch same primitive in same place
-    let token = make_primitive_token(1, 100, 100, 0xF800);
+    let token = TileHasher::new(1)
+        .write_i32(100)
+        .write_i32(100)
+        .write_u16(0xF800)
+        .finish();
     grid.touch_rect(Rect::new(100, 100, 32, 32), token);
     // If scene is completely static:
     grid.active_hashes.copy_from_slice(grid.prev_hashes);
@@ -60,7 +64,11 @@ fn test_multi_frame_damage_lifecycle() {
     );
 
     // Frame 3: Move a 16x16 widget
-    let moved_token = make_primitive_token(1, 110, 100, 0xF800);
+    let moved_token = TileHasher::new(1)
+        .write_i32(110)
+        .write_i32(100)
+        .write_u16(0xF800)
+        .finish();
     grid.touch_rect(Rect::new(110, 100, 16, 16), moved_token);
 
     let mut frame3_count = 0;

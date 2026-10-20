@@ -1,14 +1,18 @@
 #![no_std]
 
 pub mod blend;
-pub mod conic;
-pub mod scratchpad;
+pub mod primitives;
 pub mod target;
-pub mod triangle;
+pub mod viewport;
 
-// Public facade exports
-pub use blend::{blend_channel, blend_rgb565, blend_slice_rgb565};
-pub use conic::rasterize_conic;
-pub use scratchpad::ViewportScratchpad;
+// Canonical public facade exports (minimal single exports, no duplicate aliases)
+pub use blend::{
+    blend_channel, blend_rgb565, blend_slice_rgb565, blend_slice_xrgb8888, blend_xrgb8888,
+    BlendablePixel,
+};
+pub use primitives::{
+    rasterize_conic, rasterize_conic_solid, rasterize_triangle, rasterize_triangle_solid,
+    CompositingStyle, Conic, Styled, Triangle,
+};
 pub use target::CompositingTarget;
-pub use triangle::rasterize_triangle;
+pub use viewport::Viewport;

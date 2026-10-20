@@ -10,3 +10,4 @@ description = "16x16 spatial damage grid and coalescing band streamer for yonder
 
 [dependencies]
 yonder-core = { workspace = true }
+embedded-graphics-core = { workspace = true }
