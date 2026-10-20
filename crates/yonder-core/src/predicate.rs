@@ -3,8 +3,8 @@
 //! Evaluated with exact 128-bit integer arithmetic to prevent topological
 //! inconsistency, cracks between adjacent edges, or floating-point rounding errors.
 
-use core::cmp::Ordering;
 use crate::coord::Coord3;
+use core::cmp::Ordering;
 
 /// Geometric orientation of an ordered triple of points $(\mathbf{p}, \mathbf{q}, \mathbf{r})$
 /// in oriented projective space $\mathbb{T}^2$.
@@ -59,9 +59,7 @@ pub fn orientation(p: Coord3, q: Coord3, r: Coord3) -> Orientation {
     let ry = r.y() as i128;
     let rw = r.w() as i128;
 
-    let det = px * (qy * rw - qw * ry)
-            - py * (qx * rw - qw * rx)
-            + pw * (qx * ry - qy * rx);
+    let det = px * (qy * rw - qw * ry) - py * (qx * rw - qw * rx) + pw * (qx * ry - qy * rx);
 
     match det.cmp(&0) {
         Ordering::Greater => Orientation::CounterClockwise,
@@ -85,9 +83,7 @@ pub fn orientation_det(p: Coord3, q: Coord3, r: Coord3) -> i128 {
     let ry = r.y() as i128;
     let rw = r.w() as i128;
 
-    px * (qy * rw - qw * ry)
-        - py * (qx * rw - qw * rx)
-        + pw * (qx * ry - qy * rx)
+    px * (qy * rw - qw * ry) - py * (qx * rw - qw * rx) + pw * (qx * ry - qy * rx)
 }
 
 #[cfg(test)]

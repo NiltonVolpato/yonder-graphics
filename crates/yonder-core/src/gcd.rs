@@ -70,7 +70,6 @@ pub fn gcd_binary_u32(mut a: u32, mut b: u32) -> u32 {
     b << shift
 }
 
-
 /// Normalizes a triple of signed 32-bit integers by their greatest common positive divisor.
 ///
 /// In oriented projective space $\mathbb{T}^2$, scaling by any positive scalar
@@ -150,7 +149,10 @@ pub fn normalize_triple_i64_to_i32(x: i64, y: i64, w: i64) -> (i32, i32, i32) {
     }
 
     // If still exceeds i32 range, bit-shift down to fit i32
-    let max_mag = sx.unsigned_abs().max(sy.unsigned_abs()).max(sw.unsigned_abs());
+    let max_mag = sx
+        .unsigned_abs()
+        .max(sy.unsigned_abs())
+        .max(sw.unsigned_abs());
     if max_mag > i32::MAX as u64 {
         let extra_shift = 64 - max_mag.leading_zeros() - 31;
         sx >>= extra_shift;
@@ -214,7 +216,6 @@ mod tests {
         assert_eq!(gcd_binary_u64(u64::MAX, u64::MAX - 1), 1);
     }
 
-
     #[test]
     fn test_gcd_binary_u32() {
         assert_eq!(gcd_binary_u32(0, 0), 0);
@@ -255,8 +256,6 @@ mod tests {
         // Overflow reduction
         let big = (i32::MAX as i64) * 4;
         let (nx, ny, nw) = normalize_triple_i64_to_i32(big, big / 2, big / 4);
-        assert!(nx <= i32::MAX);
-        assert!(ny <= i32::MAX);
-        assert!(nw <= i32::MAX);
+        assert_eq!((nx, ny, nw), (4, 2, 1));
     }
 }

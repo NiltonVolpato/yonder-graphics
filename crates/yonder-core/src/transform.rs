@@ -31,30 +31,18 @@ impl Matrix3x3 {
     }
 
     /// The $3 \times 3$ identity projective map.
-    pub const IDENTITY: Self = Self::from_rows([
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
-    ]);
+    pub const IDENTITY: Self = Self::from_rows([[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
 
     /// Creates an integer translation projective map for 2D offset `(tx, ty)`.
     #[inline]
     pub const fn translation(tx: i32, ty: i32) -> Self {
-        Self::from_rows([
-            [1, 0, tx],
-            [0, 1, ty],
-            [0, 0, 1],
-        ])
+        Self::from_rows([[1, 0, tx], [0, 1, ty], [0, 0, 1]])
     }
 
     /// Creates an integer scaling projective map `(sx, sy)` with projective weight divisor `sw`.
     #[inline]
     pub const fn scale(sx: i32, sy: i32, sw: i32) -> Self {
-        Self::from_rows([
-            [sx, 0, 0],
-            [0, sy, 0],
-            [0, 0, sw],
-        ])
+        Self::from_rows([[sx, 0, 0], [0, sy, 0], [0, 0, sw]])
     }
 
     /// Evaluates the determinant of the inducing matrix.
@@ -145,33 +133,19 @@ impl Matrix4x4 {
     }
 
     /// The $4 \times 4$ identity projective map.
-    pub const IDENTITY: Self = Self::from_rows([
-        [1, 0, 0, 0],
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1],
-    ]);
+    pub const IDENTITY: Self =
+        Self::from_rows([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]);
 
     /// Creates an integer 3D translation projective map for offset `(tx, ty, tz)`.
     #[inline]
     pub const fn translation(tx: i32, ty: i32, tz: i32) -> Self {
-        Self::from_rows([
-            [1, 0, 0, tx],
-            [0, 1, 0, ty],
-            [0, 0, 1, tz],
-            [0, 0, 0, 1],
-        ])
+        Self::from_rows([[1, 0, 0, tx], [0, 1, 0, ty], [0, 0, 1, tz], [0, 0, 0, 1]])
     }
 
     /// Creates an integer 3D scaling projective map with divisor `sw`.
     #[inline]
     pub const fn scale(sx: i32, sy: i32, sz: i32, sw: i32) -> Self {
-        Self::from_rows([
-            [sx, 0, 0, 0],
-            [0, sy, 0, 0],
-            [0, 0, sz, 0],
-            [0, 0, 0, sw],
-        ])
+        Self::from_rows([[sx, 0, 0, 0], [0, sy, 0, 0], [0, 0, sz, 0], [0, 0, 0, sw]])
     }
 
     /// Creates a standard 3D pinhole perspective projection map with focal length `f`,
@@ -186,12 +160,7 @@ impl Matrix4x4 {
     pub const fn perspective(f: i32, cx: i32, cy: i32, z_near: i32, z_far: i32) -> Self {
         let a = z_far + z_near;
         let b = -2 * z_far * z_near;
-        Self::from_rows([
-            [f, 0, cx, 0],
-            [0, f, cy, 0],
-            [0, 0, a, b],
-            [0, 0, 1, 0],
-        ])
+        Self::from_rows([[f, 0, cx, 0], [0, f, cy, 0], [0, 0, a, b], [0, 0, 1, 0]])
     }
 
     /// Composes two 3D projective maps: `self * other`.
@@ -318,8 +287,14 @@ mod tests {
         let (screen_far, clip_far) = PROJ.project_to_screen(v_far);
 
         // Division-free depth comparison on clip coordinates
-        assert_eq!(clip_near.compare_depth(&clip_far), core::cmp::Ordering::Less);
-        assert_eq!(clip_far.compare_depth(&clip_near), core::cmp::Ordering::Greater);
+        assert_eq!(
+            clip_near.compare_depth(&clip_far),
+            core::cmp::Ordering::Less
+        );
+        assert_eq!(
+            clip_far.compare_depth(&clip_near),
+            core::cmp::Ordering::Greater
+        );
 
         let (x_near, _) = screen_near.to_euclidean().unwrap();
         let (x_far, _) = screen_far.to_euclidean().unwrap();

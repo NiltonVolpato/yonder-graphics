@@ -71,7 +71,10 @@ fn test_pinhole_projection_perspective_shrinkage() {
     let (p_far, clip_far) = PROJ.project_to_screen(v_far);
 
     // Retained depth Z' is preserved for sorting
-    assert_eq!(clip_near.compare_depth(&clip_far), core::cmp::Ordering::Less);
+    assert_eq!(
+        clip_near.compare_depth(&clip_far),
+        core::cmp::Ordering::Less
+    );
 
     let (x_near, _) = p_near.to_euclidean().unwrap();
     let (x_far, _) = p_far.to_euclidean().unwrap();
@@ -79,7 +82,7 @@ fn test_pinhole_projection_perspective_shrinkage() {
     // Farther object projects closer to the optical center (160)
     assert!(x_near > x_far);
     assert_eq!(x_near, 360); // 160 + 200 * 100 / 100 = 360
-    assert_eq!(x_far, 210);  // 160 + 200 * 100 / 400 = 210
+    assert_eq!(x_far, 210); // 160 + 200 * 100 / 400 = 210
 }
 
 #[test]
