@@ -20,3 +20,4 @@ rust-version = "1.80"
 yonder-core = { path = "crates/yonder-core" }
 yonder-damage = { path = "crates/yonder-damage" }
 yonder-raster = { path = "crates/yonder-raster" }
+embedded-graphics-core = "0.4.1"

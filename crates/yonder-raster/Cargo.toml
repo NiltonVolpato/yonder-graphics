@@ -10,3 +10,8 @@ description = "Scratchpad viewport rasterizer and local SIMD blending for yonder
 
 [dependencies]
 yonder-core = { workspace = true }
+yonder-damage = { workspace = true }
+embedded-graphics-core = { workspace = true }
+
+[dev-dependencies]
+png = "0.18.1"
