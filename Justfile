@@ -10,7 +10,7 @@ set dotenv-override := true
 # Add the scripts directory to the PATH so we can run custom tools.
 export PATH := justfile_directory() + '/scripts:' + env('PATH')
 
-export RUSTFLAGS := '-D warnings'
+export RUSTFLAGS := '-D warnings -C symbol-mangling-version=v0'
 export RUSTDOCFLAGS := '-D warnings'
 
 CARGO := 'cargo --quiet'
@@ -49,13 +49,18 @@ check +args='--workspace --all-targets':
 test +args='--workspace':
     {{ CARGO }} test --quiet {{ args }} --lib --tests
 
+[doc('Run Criterion benchmarks')]
+[group('test')]
+bench +args='':
+    {{ CARGO }} bench {{ args }}
+
 [doc('Build documentation, treating warnings as errors')]
 [group('test')]
 doc +args='--no-deps':
     {{ CARGO }} doc {{ args }}
 
 export COVERAGE_TARGET := "90"
-coverage_args := '--quiet --ignore-filename-regex "tools/"'
+coverage_args := '--quiet --ignore-filename-regex "tools/|benches/"'
 
 [doc('Test coverage greater than {{ COVERAGE_TARGET }}%')]
 [group('test')]

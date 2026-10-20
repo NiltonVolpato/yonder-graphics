@@ -6,6 +6,7 @@ members = [
     "crates/yonder-raster",
     "crates/yonder",
     "tools/damage-visualizer",
+    "benches",
 ]
 
 [workspace.package]
@@ -23,3 +24,6 @@ yonder-damage = { path = "crates/yonder-damage" }
 yonder-raster = { path = "crates/yonder-raster" }
 embedded-graphics-core = "0.4.1"
 embedded-graphics = { version = "0.8.2", default-features = false }
+
+[profile.bench]
+debug = true

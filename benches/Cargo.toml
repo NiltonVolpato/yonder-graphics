@@ -1,0 +1,27 @@
+[package]
+name = "yonder-benches"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Performance benchmarks for yonder-graphics"
+publish = false
+
+[dependencies]
+yonder = { path = "../crates/yonder" }
+yonder-core = { workspace = true }
+yonder-damage = { workspace = true }
+yonder-raster = { workspace = true }
+embedded-graphics = { workspace = true, default-features = true }
+embedded-graphics-core = { workspace = true }
+criterion = { version = "0.8", default-features = false, features = ["html_reports", "cargo_bench_support"] }
+
+[[bench]]
+name = "pipeline"
+harness = false
+
+[[bench]]
+name = "profile"
+harness = false

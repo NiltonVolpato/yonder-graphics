@@ -1,4 +1,9 @@
 /target
 Cargo.lock
 *.png
+*.trace
+cargo-flamegraph.trace/
+flamegraph.svg
+*.json.gz
+*.json
 
