@@ -1,10 +1,9 @@
-use yonder_damage::{
-    make_primitive_token, stream_dirty_bands, DamageGrid320x240, Rect, SettleTimer,
-};
+use yonder_damage::{make_primitive_token, stream_dirty_bands, DamageGridStorage320x240, Rect};
 
 #[test]
 fn test_collision_absorption_via_closing() {
-    let mut grid = DamageGrid320x240::new();
+    let mut storage = DamageGridStorage320x240::new();
+    let mut grid = storage.as_grid();
     grid.prev_hashes.fill(0);
     grid.active_hashes.fill(0);
 
@@ -18,7 +17,7 @@ fn test_collision_absorption_via_closing() {
     let mut count = 0;
 
     // Scratchpad capacity = 16 KB (8192 pixels)
-    stream_dirty_bands(&grid, 8192, |rect| {
+    stream_dirty_bands(&mut grid, 8192, |rect| {
         emitted_rects[count] = rect;
         count += 1;
     });
@@ -34,54 +33,53 @@ fn test_collision_absorption_via_closing() {
 
 #[test]
 fn test_multi_frame_damage_lifecycle() {
-    let mut grid = DamageGrid320x240::new();
-    let mut settle_timer = SettleTimer::new(3);
+    let mut storage = DamageGridStorage320x240::new();
+    let mut grid = storage.as_grid();
 
     // Frame 1: Initial startup -> all tiles dirty
     let mut frame1_count = 0;
-    stream_dirty_bands(&grid, 8192, |_| {
+    stream_dirty_bands(&mut grid, 8192, |_| {
         frame1_count += 1;
     });
     assert!(frame1_count > 0, "Initial frame must emit dirty rects");
-    grid.swap_buffers();
 
     // Frame 2: Static scene with zero changes
-    grid.reset_active();
     // Re-draw same scene state: touch same primitive in same place
     let token = make_primitive_token(1, 100, 100, 0xF800);
     grid.touch_rect(Rect::new(100, 100, 32, 32), token);
-    // Since prev had same hashes (after swap), let's test zero diff:
     // If scene is completely static:
-    grid.active_hashes.copy_from_slice(&grid.prev_hashes);
+    grid.active_hashes.copy_from_slice(grid.prev_hashes);
 
     let mut frame2_count = 0;
-    stream_dirty_bands(&grid, 8192, |_| {
+    stream_dirty_bands(&mut grid, 8192, |_| {
         frame2_count += 1;
     });
-    assert_eq!(frame2_count, 0, "Static frame must produce ZERO dirty rects");
-
-    let need_settle = settle_timer.update(false); // idle frame 1
-    assert!(!need_settle);
-    grid.swap_buffers();
+    assert_eq!(
+        frame2_count, 0,
+        "Static frame must produce ZERO dirty rects"
+    );
 
     // Frame 3: Move a 16x16 widget
-    grid.reset_active();
     let moved_token = make_primitive_token(1, 110, 100, 0xF800);
     grid.touch_rect(Rect::new(110, 100, 16, 16), moved_token);
 
     let mut frame3_count = 0;
     let mut frame3_rect = Rect::ZERO;
-    stream_dirty_bands(&grid, 8192, |rect| {
+    stream_dirty_bands(&mut grid, 8192, |rect| {
         frame3_rect = rect;
         frame3_count += 1;
     });
     assert_eq!(frame3_count, 1);
-    assert!(frame3_rect.width <= 48, "Only affected tiles should be dirty");
+    assert!(
+        frame3_rect.width <= 48,
+        "Only affected tiles should be dirty"
+    );
 }
 
 #[test]
 fn test_band_streaming_capacity_invariants() {
-    let mut grid = DamageGrid320x240::new();
+    let mut storage = DamageGridStorage320x240::new();
+    let mut grid = storage.as_grid();
     // Dirty entire 320x240 screen (76,800 pixels)
     grid.active_hashes.fill(0x1234);
     grid.prev_hashes.fill(0);
@@ -91,7 +89,7 @@ fn test_band_streaming_capacity_invariants() {
     let mut total_band_pixels = 0;
     let mut band_count = 0;
 
-    stream_dirty_bands(&grid, CAPACITY, |band| {
+    stream_dirty_bands(&mut grid, CAPACITY, |band| {
         assert!(
             band.pixel_count() <= CAPACITY,
             "Band exceeds scratchpad capacity: {} > {}",

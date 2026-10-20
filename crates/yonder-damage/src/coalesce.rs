@@ -1,144 +1,283 @@
-//! Morphological coalescing and zero-alloc dirty rectangle streaming.
+//! Queue-driven morphological coalescing using an intrusive linked-list queue in `active_hashes`.
 //!
-//! Applies 1D run bridging (closing 1-2 clean tile gaps where continuous streaming
-//! is cheaper than CASET/RASET command overhead) followed by vertical span merging.
+//! Replaces arbitrary slot limits with in-place buffer reuse:
+//! - Unqueued clean tiles: `0`
+//! - Unqueued dirty tiles: `1`
+//! - Queued seeds: `ptr >= 2` (points to `(ptr - 2)` as next queued index)
+//! - End of queue: `0xFFFF` (`u16::MAX`)
 
 use crate::grid::DamageGrid;
 use crate::rect::Rect;
 
-/// Maximum number of disjoint active coalescing rectangles tracked simultaneously
-/// in on-stack SRAM before nearest bounding-box merging occurs.
-pub const MAX_ACTIVE_RECTS: usize = 8;
-
-/// Bridges isolated clean tiles along a single row of tiles.
+/// Maximum extra clean pixels we are willing to transmit in order to merge two spans
+/// vertically and avoid a separate SPI address-window command transaction.
 ///
-/// If two dirty tiles are separated by 1 or 2 clean tiles ($\le 32$ pixels),
-/// bridging saves external bus bandwidth because continuous pixel streaming is
-/// cheaper than the command sequence overhead ($\approx 20\text{--}30\text{ bytes}$).
-#[inline]
-pub fn bridge_row_gaps<const COLS: usize>(row_dirty: &mut [bool; COLS]) {
-    let mut last_dirty_idx: Option<usize> = None;
+/// 512 pixels = 2 tiles ($16 \times 16$), corresponding to the cost of an SPI command burst.
+pub const COALESCE_THRESHOLD_PIXELS: usize = 512;
 
-    for c in 0..COLS {
-        if row_dirty[c] {
-            if let Some(prev) = last_dirty_idx {
-                let gap = c - prev - 1;
-                if gap == 1 || gap == 2 {
-                    // Bridge the gap
-                    for slot in row_dirty.iter_mut().take(c).skip(prev + 1) {
-                        *slot = true;
-                    }
-                }
-            }
-            last_dirty_idx = Some(c);
-        }
+const NULL: u16 = u16::MAX;
+
+#[inline]
+fn enqueue(hashes: &mut [u16], head: &mut u16, tail: &mut u16, idx: usize) {
+    let ptr = (idx + 2) as u16;
+    hashes[idx] = NULL;
+    if *head == NULL {
+        *head = ptr;
+        *tail = ptr;
+    } else {
+        let prev_tail_idx = (*tail - 2) as usize;
+        hashes[prev_tail_idx] = ptr;
+        *tail = ptr;
     }
 }
 
-/// Coalesces dirty tiles from `grid` and yields non-overlapping dirty rectangles to `consumer`.
-///
-/// Operates with **zero heap allocations** using a fixed-capacity stack tracker.
-pub fn coalesce_dirty_rects<
-    const COLS: usize,
-    const ROWS: usize,
-    const TILES: usize,
-    F: FnMut(Rect),
->(
-    grid: &DamageGrid<COLS, ROWS, TILES>,
-    mut consumer: F,
-) {
-    let mut active_rects: [Option<Rect>; MAX_ACTIVE_RECTS] = [None; MAX_ACTIVE_RECTS];
-
-    for r in 0..ROWS {
-        // Step 1: Extract and bridge row dirty flags
-        let mut row_dirty = [false; COLS];
-        let mut row_has_dirty = false;
-        for (c, slot) in row_dirty.iter_mut().enumerate().take(COLS) {
-            if grid.is_tile_dirty(c, r) {
-                *slot = true;
-                row_has_dirty = true;
-            }
+#[inline]
+fn dequeue(hashes: &mut [u16], head: &mut u16, tail: &mut u16) -> Option<usize> {
+    if *head == NULL {
+        None
+    } else {
+        let idx = (*head - 2) as usize;
+        *head = hashes[idx];
+        if *head == NULL {
+            *tail = NULL;
         }
+        Some(idx)
+    }
+}
 
-        if row_has_dirty {
-            bridge_row_gaps::<COLS>(&mut row_dirty);
+/// Scans a contiguous dirty run starting at `c` along row `r`, bridging 1-2 clean tile gaps.
+/// Returns `(start_c, end_c)` where `end_c` is exclusive.
+#[inline]
+fn scan_row_span(hashes: &[u16], cols: usize, r: usize, mut c: usize) -> (usize, usize) {
+    let start_c = c;
+    let row_offset = r * cols;
+
+    while c < cols {
+        let idx = row_offset + c;
+        if hashes[idx] != 0 {
+            c += 1;
+        } else if c + 1 < cols && hashes[row_offset + c + 1] != 0 {
+            // Bridge 1-tile gap
+            c += 2;
+        } else if c + 2 < cols && hashes[row_offset + c + 2] != 0 {
+            // Bridge 2-tile gap
+            c += 3;
+        } else {
+            break;
         }
+    }
+    (start_c, c)
+}
 
-        // Step 2: Extract continuous runs from the bridged row
-        let mut matched_in_row = [false; MAX_ACTIVE_RECTS];
+#[allow(clippy::too_many_arguments)]
+fn grow_rect(
+    hashes: &mut [u16],
+    cols: usize,
+    rows: usize,
+    threshold_pixels: usize,
+    head: &mut u16,
+    tail: &mut u16,
+    start_c: usize,
+    start_r: usize,
+) -> Option<Rect> {
+    let (span_start, span_end) = scan_row_span(hashes, cols, start_r, start_c);
+    if span_start == span_end {
+        return None;
+    }
+
+    let tile_size = DamageGrid::TILE_SIZE as i32;
+
+    let mut active_c_start = span_start;
+    let mut active_c_end = span_end;
+    let active_r_start = start_r;
+    let mut active_r_end = start_r + 1; // exclusive
+
+    let mut dirty_pixels = (span_end - span_start) * (tile_size as usize * tile_size as usize);
+    let mut accumulated_waste: usize = 0;
+
+    // Mark absorbed tiles on this row as 0
+    for c in span_start..span_end {
+        hashes[start_r * cols + c] = 0;
+    }
+
+    // Scan right on this row for any additional disjoint spans and enqueue them
+    let mut right_c = span_end;
+    while right_c < cols {
+        if hashes[start_r * cols + right_c] != 0 {
+            let (r_start, r_end) = scan_row_span(hashes, cols, start_r, right_c);
+            enqueue(hashes, head, tail, start_r * cols + r_start);
+            right_c = r_end;
+        } else {
+            right_c += 1;
+        }
+    }
+
+    // Downward Expansion: examine rows below
+    let mut curr_r = start_r + 1;
+    while curr_r < rows {
+        let row_offset = curr_r * cols;
+        let mut merged_in_row = false;
         let mut c = 0;
-        while c < COLS {
-            if row_dirty[c] {
-                let start_c = c;
-                while c < COLS && row_dirty[c] {
-                    c += 1;
-                }
-                let end_c = c; // exclusive
 
-                let span_rect = Rect::new(
-                    (start_c * 16) as i32,
-                    (r * 16) as i32,
-                    ((end_c - start_c) * 16) as u32,
-                    16,
-                );
+        while c < cols {
+            if hashes[row_offset + c] != 0 {
+                let (s_start, s_end) = scan_row_span(hashes, cols, curr_r, c);
 
-                // Try to merge with an active rectangle from row r - 1
-                let mut merged = false;
-                for i in 0..MAX_ACTIVE_RECTS {
-                    if let Some(ref mut active) = active_rects[i] {
-                        // Check if active rect touches the current row vertically and overlaps in X
-                        if active.bottom() == span_rect.y
-                            && active.x < span_rect.right()
-                            && active.right() > span_rect.x
-                        {
-                            *active = active.bounding_box(&span_rect);
-                            matched_in_row[i] = true;
-                            merged = true;
-                            break;
+                // Check if this span overlaps or touches active_rect's horizontal bounds
+                let overlaps = s_start < active_c_end && s_end > active_c_start;
+
+                if overlaps && !merged_in_row {
+                    let cand_c_start = active_c_start.min(s_start);
+                    let cand_c_end = active_c_end.max(s_end);
+                    let cand_h = ((curr_r - active_r_start + 1) as i32) * tile_size;
+                    let cand_w = ((cand_c_end - cand_c_start) as i32) * tile_size;
+                    let cand_area = (cand_w as usize) * (cand_h as usize);
+
+                    let span_pixels = (s_end - s_start) * (tile_size as usize * tile_size as usize);
+                    let extra_waste = cand_area.saturating_sub(dirty_pixels + span_pixels);
+
+                    if accumulated_waste + extra_waste <= threshold_pixels {
+                        // Merge downward!
+                        active_c_start = cand_c_start;
+                        active_c_end = cand_c_end;
+                        active_r_end = curr_r + 1;
+                        dirty_pixels += span_pixels;
+                        accumulated_waste += extra_waste;
+                        merged_in_row = true;
+
+                        // Mark absorbed tiles as 0
+                        for sc in s_start..s_end {
+                            hashes[row_offset + sc] = 0;
+                        }
+                    } else {
+                        // Too expensive to merge; enqueue if on the right
+                        if s_start >= active_c_end {
+                            enqueue(hashes, head, tail, row_offset + s_start);
                         }
                     }
+                } else if s_start >= active_c_end {
+                    // Unrelated span on the right -> defer to queue
+                    enqueue(hashes, head, tail, row_offset + s_start);
                 }
 
-                if !merged {
-                    // Place into an empty slot, or merge into closest if full
-                    let mut placed = false;
-                    for i in 0..MAX_ACTIVE_RECTS {
-                        if active_rects[i].is_none() {
-                            active_rects[i] = Some(span_rect);
-                            matched_in_row[i] = true;
-                            placed = true;
-                            break;
-                        }
-                    }
-
-                    if !placed {
-                        // Active buffer full: merge slot 0 with slot 1 to make room
-                        if let (Some(r0), Some(r1)) = (active_rects[0], active_rects[1]) {
-                            active_rects[0] = Some(r0.bounding_box(&r1));
-                        }
-                        active_rects[1] = Some(span_rect);
-                        matched_in_row[1] = true;
-                    }
-                }
+                c = s_end;
             } else {
                 c += 1;
             }
         }
 
-        // Step 3: Flush any active rectangles that did NOT receive an extension in this row
-        for i in 0..MAX_ACTIVE_RECTS {
-            if !matched_in_row[i] {
-                if let Some(finished) = active_rects[i].take() {
-                    consumer(finished);
+        if !merged_in_row {
+            // Downward expansion stopped
+            break;
+        }
+
+        curr_r += 1;
+    }
+
+    let rect = Rect::new(
+        (active_c_start as i32) * tile_size,
+        (active_r_start as i32) * tile_size,
+        ((active_c_end - active_c_start) as u32) * (tile_size as u32),
+        ((active_r_end - active_r_start) as u32) * (tile_size as u32),
+    );
+    Some(rect)
+}
+
+/// Coalesces dirty tiles in `grid` into minimal rectangular update windows, streaming them to `consumer`.
+///
+/// Operates with **zero heap allocations** and **zero extra stack arrays** by repurposing
+/// `grid.active_hashes` in-place as an intrusive FIFO queue.
+pub fn coalesce_dirty_rects<F: FnMut(Rect)>(grid: &mut DamageGrid<'_>, consumer: F) {
+    coalesce_dirty_rects_with_threshold(grid, COALESCE_THRESHOLD_PIXELS, consumer);
+}
+
+/// Coalesces dirty tiles with a custom maximum extra clean pixel threshold.
+pub fn coalesce_dirty_rects_with_threshold<F: FnMut(Rect)>(
+    grid: &mut DamageGrid<'_>,
+    threshold_pixels: usize,
+    mut consumer: F,
+) {
+    let cols = grid.cols;
+    let rows = grid.rows;
+    let total_tiles = cols * rows;
+
+    if total_tiles == 0 {
+        return;
+    }
+
+    // Phase 1: In-place diff & hash transfer
+    // Active hashes are copied to prev_hashes (for next frame) while in-place marking:
+    // 0 = clean, 1 = dirty
+    for i in 0..total_tiles {
+        let is_dirty = grid.active_hashes[i] != grid.prev_hashes[i];
+        grid.prev_hashes[i] = grid.active_hashes[i];
+        grid.active_hashes[i] = if is_dirty { 1 } else { 0 };
+    }
+
+    let hashes = &mut grid.active_hashes[..total_tiles];
+    let mut head: u16 = NULL;
+    let mut tail: u16 = NULL;
+
+    // Phase 2: Processing loop
+    // Process seeds from the grid and from the intrusive queue
+    for r in 0..rows {
+        for c in 0..cols {
+            // First, drain any pending items in the queue
+            while let Some(queued_idx) = dequeue(hashes, &mut head, &mut tail) {
+                let qr = queued_idx / cols;
+                let qc = queued_idx % cols;
+                if hashes[queued_idx] != 0 {
+                    if let Some(rect) = grow_rect(
+                        hashes,
+                        cols,
+                        rows,
+                        threshold_pixels,
+                        &mut head,
+                        &mut tail,
+                        qc,
+                        qr,
+                    ) {
+                        consumer(rect);
+                    }
+                }
+            }
+
+            // Then check the current grid tile
+            let idx = r * cols + c;
+            if hashes[idx] != 0 {
+                if let Some(rect) = grow_rect(
+                    hashes,
+                    cols,
+                    rows,
+                    threshold_pixels,
+                    &mut head,
+                    &mut tail,
+                    c,
+                    r,
+                ) {
+                    consumer(rect);
                 }
             }
         }
     }
 
-    // Step 4: Flush all remaining active rectangles at bottom of screen
-    for opt_rect in active_rects.iter_mut() {
-        if let Some(remaining) = opt_rect.take() {
-            consumer(remaining);
+    // Drain any remaining items in queue
+    while let Some(queued_idx) = dequeue(hashes, &mut head, &mut tail) {
+        let qr = queued_idx / cols;
+        let qc = queued_idx % cols;
+        if hashes[queued_idx] != 0 {
+            if let Some(rect) = grow_rect(
+                hashes,
+                cols,
+                rows,
+                threshold_pixels,
+                &mut head,
+                &mut tail,
+                qc,
+                qr,
+            ) {
+                consumer(rect);
+            }
         }
     }
 }
@@ -146,41 +285,37 @@ pub fn coalesce_dirty_rects<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid::DamageGridStorage;
 
     #[test]
-    fn test_bridge_row_gaps() {
-        // Gap of 1 clean tile: [true, false, true] -> [true, true, true]
-        let mut row = [false; 8];
-        row[1] = true;
-        row[3] = true;
-        bridge_row_gaps::<8>(&mut row);
-        assert!(row[1]);
-        assert!(row[2], "1-tile gap must be bridged");
-        assert!(row[3]);
+    fn test_coalesce_single_and_horizontal_run() {
+        let mut storage = DamageGridStorage::<4, 4>::new();
+        let mut grid = storage.as_grid();
+        grid.prev_hashes.fill(0);
+        grid.active_hashes.fill(0);
 
-        // Gap of 2 clean tiles: [true, false, false, true] -> [true, true, true, true]
-        let mut row2 = [false; 8];
-        row2[1] = true;
-        row2[4] = true;
-        bridge_row_gaps::<8>(&mut row2);
-        assert!(row2[1]);
-        assert!(row2[2], "2-tile gap must be bridged");
-        assert!(row2[3], "2-tile gap must be bridged");
-        assert!(row2[4]);
+        // Mark tiles (1, 1) and (2, 1) dirty
+        grid.touch_tile(1, 1, 0x1111);
+        grid.touch_tile(2, 1, 0x2222);
 
-        // Gap of 3 clean tiles: NOT bridged
-        let mut row3 = [false; 8];
-        row3[1] = true;
-        row3[5] = true;
-        bridge_row_gaps::<8>(&mut row3);
-        assert!(!row3[2], "3-tile gap must not be bridged");
-        assert!(!row3[3]);
-        assert!(!row3[4]);
+        let mut rects = [Rect::ZERO; 4];
+        let mut count = 0;
+        coalesce_dirty_rects(&mut grid, |rect| {
+            rects[count] = rect;
+            count += 1;
+        });
+
+        assert_eq!(count, 1);
+        assert_eq!(rects[0], Rect::new(16, 16, 32, 16));
+        // All active hashes should be cleanly zeroed for the next frame
+        assert_eq!(grid.active_hashes[4 + 1], 0);
+        assert_eq!(grid.active_hashes[4 + 2], 0);
     }
 
     #[test]
     fn test_coalesce_vertical_extension() {
-        let mut grid = DamageGrid::<4, 4, 16>::new();
+        let mut storage = DamageGridStorage::<4, 4>::new();
+        let mut grid = storage.as_grid();
         grid.prev_hashes.fill(0);
         grid.active_hashes.fill(0);
 
@@ -190,7 +325,7 @@ mod tests {
 
         let mut rects = [Rect::ZERO; 4];
         let mut count = 0;
-        coalesce_dirty_rects(&grid, |rect| {
+        coalesce_dirty_rects(&mut grid, |rect| {
             rects[count] = rect;
             count += 1;
         });
@@ -200,26 +335,49 @@ mod tests {
     }
 
     #[test]
-    fn test_coalesce_overflow_merging() {
-        // Grid with 30 columns
-        let mut grid = DamageGrid::<30, 2, 60>::new();
+    fn test_coalesce_disjoint_right_spans_not_lost() {
+        // Row 0 has Icon A at col 1 and Icon B at col 5 (gap of 3 clean tiles: 2, 3, 4 -> not bridged)
+        let mut storage = DamageGridStorage::<7, 3>::new();
+        let mut grid = storage.as_grid();
         grid.prev_hashes.fill(0);
         grid.active_hashes.fill(0);
 
-        // Create 10 disjoint dirty tiles on row 0 (gap of 2 clean tiles: 0, 3, 6, 9, 12, 15, 18, 21, 24, 27)
-        // Wait, gap of 2 is bridged! Gap must be 3 clean tiles to remain disjoint:
-        // Cols: 0, 4, 8, 12, 16, 20, 24, 28 -> that's 8 runs.
-        // Let's use 36 columns: 0, 4, 8, 12, 16, 20, 24, 28, 32 -> 9 disjoint runs!
-        let mut big_grid = DamageGrid::<40, 2, 80>::new();
-        big_grid.prev_hashes.fill(0);
-        big_grid.active_hashes.fill(0);
+        grid.touch_tile(1, 0, 0xAAAA);
+        grid.touch_tile(5, 0, 0xBBBB);
 
-        for c in (0..40).step_by(4) {
-            big_grid.touch_tile(c, 0, 0x1234);
-        }
+        let mut rects = [Rect::ZERO; 4];
+        let mut count = 0;
+        coalesce_dirty_rects(&mut grid, |rect| {
+            rects[count] = rect;
+            count += 1;
+        });
 
-        let mut emitted_count = 0;
-        coalesce_dirty_rects(&big_grid, |_| emitted_count += 1);
-        assert!(emitted_count > 0);
+        // Must emit TWO separate rectangles, neither lost, neither merged across cols 2..4
+        assert_eq!(count, 2);
+        assert_eq!(rects[0], Rect::new(16, 0, 16, 16));
+        assert_eq!(rects[1], Rect::new(80, 0, 16, 16));
+    }
+
+    #[test]
+    fn test_coalesce_gap_bridging() {
+        // Gap of 1 clean tile: cols 1 and 3 are dirty, col 2 is clean
+        let mut storage = DamageGridStorage::<5, 2>::new();
+        let mut grid = storage.as_grid();
+        grid.prev_hashes.fill(0);
+        grid.active_hashes.fill(0);
+
+        grid.touch_tile(1, 0, 0x1111);
+        grid.touch_tile(3, 0, 0x3333);
+
+        let mut rects = [Rect::ZERO; 4];
+        let mut count = 0;
+        coalesce_dirty_rects(&mut grid, |rect| {
+            rects[count] = rect;
+            count += 1;
+        });
+
+        assert_eq!(count, 1);
+        // Spans col 1..4 (3 tiles = 48 px)
+        assert_eq!(rects[0], Rect::new(16, 0, 48, 16));
     }
 }

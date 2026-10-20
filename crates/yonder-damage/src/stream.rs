@@ -1,65 +1,16 @@
-//! Band streaming and idle settle debounce logic.
+//! Band streaming logic for scratchpad-sized slices.
 
 use crate::coalesce::coalesce_dirty_rects;
 use crate::grid::DamageGrid;
 use crate::rect::Rect;
 
-/// Debounce timer that triggers an unconditional full refresh after motion ceases.
-///
-/// Guarantees that any rare hash collision (probability $< 0.003\%$) on an edge tile
-/// is permanently swallowed when the screen returns to a resting state.
-#[derive(Copy, Clone, Debug)]
-pub struct SettleTimer {
-    consecutive_idle_frames: u8,
-    settle_threshold: u8,
-    has_settled: bool,
-}
-
-impl SettleTimer {
-    /// Creates a new settle timer with the specified frame count threshold
-    /// (typically 3–6 frames, corresponding to ~50–100ms at 60 FPS).
-    #[inline]
-    pub const fn new(settle_threshold: u8) -> Self {
-        Self {
-            consecutive_idle_frames: 0,
-            settle_threshold,
-            has_settled: false,
-        }
-    }
-
-    /// Updates the timer for the current frame.
-    ///
-    /// Returns `true` if this frame must trigger an unconditional settle refresh.
-    #[inline]
-    pub fn update(&mut self, frame_had_motion: bool) -> bool {
-        if frame_had_motion {
-            self.consecutive_idle_frames = 0;
-            self.has_settled = false;
-            false
-        } else if !self.has_settled {
-            self.consecutive_idle_frames += 1;
-            if self.consecutive_idle_frames >= self.settle_threshold {
-                self.has_settled = true;
-                true // Settle frame triggered!
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    }
-
-    /// Resets the settle state (e.g., when new user input arrives).
-    #[inline]
-    pub fn reset(&mut self) {
-        self.consecutive_idle_frames = 0;
-        self.has_settled = false;
-    }
-}
-
 /// Slices a rectangle into horizontal bands that strictly fit within `max_scratchpad_pixels`.
 #[inline]
-pub fn slice_rect_to_bands<F: FnMut(Rect)>(rect: Rect, max_scratchpad_pixels: usize, mut consumer: F) {
+pub fn slice_rect_to_bands<F: FnMut(Rect)>(
+    rect: Rect,
+    max_scratchpad_pixels: usize,
+    mut consumer: F,
+) {
     if rect.is_empty() {
         return;
     }
@@ -90,13 +41,8 @@ pub fn slice_rect_to_bands<F: FnMut(Rect)>(rect: Rect, max_scratchpad_pixels: us
 ///
 /// Guaranteed to emit only rectangles whose `pixel_count() <= max_scratchpad_pixels`,
 /// ensuring all drawing operations can perform fast local SRAM read-modify-write for transparency.
-pub fn stream_dirty_bands<
-    const COLS: usize,
-    const ROWS: usize,
-    const TILES: usize,
-    F: FnMut(Rect),
->(
-    grid: &DamageGrid<COLS, ROWS, TILES>,
+pub fn stream_dirty_bands<F: FnMut(Rect)>(
+    grid: &mut DamageGrid<'_>,
     max_scratchpad_pixels: usize,
     mut consumer: F,
 ) {
@@ -133,29 +79,6 @@ mod tests {
         for band in bands.iter().take(count) {
             assert!(band.pixel_count() <= 2000);
         }
-    }
-
-    #[test]
-    fn test_settle_timer() {
-        let mut timer = SettleTimer::new(3);
-
-        // Frame with motion -> no settle
-        assert!(!timer.update(true));
-        // Idle frame 1 -> no settle
-        assert!(!timer.update(false));
-        // Idle frame 2 -> no settle
-        assert!(!timer.update(false));
-        // Idle frame 3 -> SETTLE TRIGGERED!
-        assert!(timer.update(false));
-        // Subsequent idle frames -> already settled, false
-        assert!(!timer.update(false));
-
-        // Motion resets timer
-        assert!(!timer.update(true));
-        assert!(!timer.update(false));
-
-        timer.reset();
-        assert!(!timer.update(false));
     }
 
     #[test]
