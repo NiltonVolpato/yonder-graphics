@@ -5,6 +5,7 @@ members = [
     "crates/yonder-damage",
     "crates/yonder-raster",
     "crates/yonder",
+    "tools/damage-visualizer",
 ]
 
 [workspace.package]

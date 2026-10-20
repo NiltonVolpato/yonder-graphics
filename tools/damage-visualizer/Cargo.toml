@@ -1,0 +1,19 @@
+[package]
+name = "damage-visualizer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Interactive damage tracking and compositing visualizer for yonder-graphics"
+
+[dependencies]
+yonder = { path = "../../crates/yonder" }
+yonder-core = { workspace = true }
+yonder-damage = { workspace = true }
+yonder-raster = { workspace = true }
+embedded-graphics = { workspace = true, default-features = true }
+embedded-graphics-core = { workspace = true }
+winit = "0.30"
+softbuffer = "0.4"

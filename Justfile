@@ -55,7 +55,7 @@ doc +args='--no-deps':
     {{ CARGO }} doc {{ args }}
 
 export COVERAGE_TARGET := "90"
-coverage_args := '--quiet'
+coverage_args := '--quiet --ignore-filename-regex "tools/"'
 
 [doc('Test coverage greater than {{ COVERAGE_TARGET }}%')]
 [group('test')]

@@ -58,29 +58,34 @@
   - **Pass 1 Scanline Coalescing:** When a convex polygon/triangle spans 16 vertical scanlines inside the same $16 \times 16$ tile, avoid calling `accumulate_tile` 16 separate times. Group scanlines into tile-level bounds or spans.
   - **Sparse Traversal Audit:** Ensure lines, curves, and arcs evaluate only along their actual drawn trajectory ($O(\text{perimeter})$) rather than sweeping the entire $O(W \times H)$ bounding box. Replace the naive bounding-box scan in `conic.rs` with midpoint/Bresenham stepping.
 
-### 6. Interactive Damage Visualizer Tool (`tools/damage-visualizer`)
-- **Status:** Deferred until core compositing targets and styled primitives are implemented.
-- **Location:** Dedicated workspace crate at `tools/damage-visualizer`.
-- **Dependencies:** `winit = "0.30"`, `softbuffer = "0.4"`.
-- **Display & Scaling:**
-  - Configurable integer scaling (e.g. 5x integer scale, $800 \times 640$ window for $160 \times 128$ native canvas).
-  - Pixel-perfect presentation of the base RGB565 framebuffer expanded to 32-bit ARGB.
-- **Visual Overlays & Inspection:**
-  - Base rendered image from `Viewport`.
-  - Tile grid lines marking $16 \times 16$ tile boundaries.
-  - Translucent red/amber tint over tiles flagged dirty by `DamageGrid::is_tile_dirty`.
-  - Bright bounding-box wireframe outlines for coalesced rectangles emitted by `coalesce_dirty_rects`.
-  - Clean tiles rendered untinted to clearly visualize overdraw culling savings.
-- **Interactive Controls:**
-  - `Space` / `Right Arrow`: Step forward one frame.
-  - `Left Arrow`: Step backward one frame.
-  - `P`: Toggle play/pause continuous animation.
-  - `G`: Toggle tile grid lines and dirty tile overlay.
-  - `C`: Toggle coalesced rectangle wireframes.
-  - `R`: Reset animation to Frame 0.
-- **Animation Content:**
-  - Complex continuous animated scenes: oscillating/rotating gauge needles, translating and bouncing translucent shapes, overlapping cards.
-  - Window title showing frame number, dirty tile count, and coalesced rectangle count.
+### 6. Interactive Damage Visualizer Tool (`tools/damage-visualizer`) (Completed ✅)
+- **Implemented:**
+  - Dedicated workspace crate at `tools/damage-visualizer`.
+  - Dependencies: `winit = "0.30"`, `softbuffer = "0.4"`.
+  - **Display & Scaling:**
+    - Canonical $360 \times 360$ native canvas ($23 \times 23$ tile grid).
+    - Pixel-perfect 2x nearest-neighbor integer scaling to a $720 \times 720$ window.
+    - Zero-copy native 32-bit `Rgb888` compositing directly targeting `softbuffer`'s `&mut [u32]`.
+  - **Layer Compositing & Overlays ("Yonder All the Way Down"):**
+    - Dual-pass immediate-mode architecture: Pass 1 on `DamageGrid`, Pass 2 on `Viewport`.
+    - Tile grid lines marking $16 \times 16$ tile boundaries drawn with `viewport.blend_solid`.
+    - Translucent red heatmap overlay over tiles flagged dirty by `DamageGrid::is_tile_dirty`.
+    - Bright neon green 2px bounding-box wireframe outlines for coalesced rectangles emitted by `coalesce_dirty_rects`.
+    - Clean tiles rendered untinted to visually highlight overdraw culling savings.
+  - **Physics & Animation Content:**
+    - Inertia-driven bouncing ball with simulated gravity, dynamic aerodynamic stretch, and ground-impact squash deforming into an ellipse using `Conic::circle` and `Conic::ellipse`.
+    - Alpha-blended dynamic ground contact shadow tracking the ball.
+    - Rotating projective `Triangle` needle gauge.
+    - Horizontally oscillating translucent card badge.
+    - Static UI card demonstrating 0% damage overhead on static regions.
+  - **Interactive Controls:**
+    - `Space` / `P`: Toggle play/pause continuous ~60 FPS animation.
+    - `Right Arrow`: Step forward one frame (pauses).
+    - `Left Arrow`: Step backward one frame (pauses).
+    - `G`: Toggle tile grid lines and dirty tile heatmap overlay.
+    - `C`: Toggle coalesced rectangle wireframes.
+    - `R`: Reset animation to Frame 0.
+    - Window title telemetry showing frame number, dirty tile count and percentage, and coalesced rectangle count.
 
 ### 7. Configurable Tile Size & Hash Type (Low Priority)
 - **Goal:**
