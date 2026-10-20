@@ -25,23 +25,13 @@ pub trait BlendablePixel: PixelColor {
 /// Uses the exact division-free integer identity:
 /// $$\lfloor \frac{V + 1 + \lfloor V / 256 \rfloor}{256} \rfloor = \lfloor \frac{V}{255} \rfloor$$
 #[inline(always)]
-pub const fn blend_channel(src: u32, dst: u32, alpha: u32) -> u32 {
+pub(crate) const fn blend_channel(src: u32, dst: u32, alpha: u32) -> u32 {
     let val = src * alpha + dst * (255 - alpha);
     (val + 1 + (val >> 8)) >> 8
 }
 
-/// Blends a source RGB565 color over an existing destination RGB565 pixel with alpha $\in [0, 255]$.
-#[inline]
-pub fn blend_rgb565(dst: u16, src: u16, alpha: u8) -> u16 {
-    if alpha == 255 {
-        return src;
-    }
-    if alpha == 0 {
-        return dst;
-    }
-
-    let a = alpha as u32;
-
+#[inline(always)]
+fn blend_rgb565_inner(dst: u16, src: u16, a: u32) -> u16 {
     let r_src = ((src >> 11) & 0x1F) as u32;
     let g_src = ((src >> 5) & 0x3F) as u32;
     let b_src = (src & 0x1F) as u32;
@@ -57,9 +47,21 @@ pub fn blend_rgb565(dst: u16, src: u16, alpha: u8) -> u16 {
     ((r_out as u16) << 11) | ((g_out as u16) << 5) | (b_out as u16)
 }
 
+/// Blends a source RGB565 color over an existing destination RGB565 pixel with alpha $\in [0, 255]$.
+#[inline]
+pub(crate) fn blend_rgb565(dst: u16, src: u16, alpha: u8) -> u16 {
+    if alpha == 255 {
+        return src;
+    }
+    if alpha == 0 {
+        return dst;
+    }
+    blend_rgb565_inner(dst, src, alpha as u32)
+}
+
 /// Blends a solid source RGB565 color across a contiguous slice of destination pixels in local SRAM.
 #[inline]
-pub fn blend_slice_rgb565(dst: &mut [u16], src: u16, alpha: u8) {
+pub(crate) fn blend_slice_rgb565(dst: &mut [u16], src: u16, alpha: u8) {
     if alpha == 0 {
         return;
     }
@@ -68,23 +70,14 @@ pub fn blend_slice_rgb565(dst: &mut [u16], src: u16, alpha: u8) {
         return;
     }
 
+    let a = alpha as u32;
     for pixel in dst.iter_mut() {
-        *pixel = blend_rgb565(*pixel, src, alpha);
+        *pixel = blend_rgb565_inner(*pixel, src, a);
     }
 }
 
-/// Blends a source 24/32-bit XRGB8888 color over a destination pixel with alpha $\in [0, 255]$.
-#[inline]
-pub fn blend_xrgb8888(dst: u32, src: u32, alpha: u8) -> u32 {
-    if alpha == 255 {
-        return src;
-    }
-    if alpha == 0 {
-        return dst;
-    }
-
-    let a = alpha as u32;
-
+#[inline(always)]
+fn blend_xrgb8888_inner(dst: u32, src: u32, a: u32) -> u32 {
     let r_src = (src >> 16) & 0xFF;
     let g_src = (src >> 8) & 0xFF;
     let b_src = src & 0xFF;
@@ -100,9 +93,21 @@ pub fn blend_xrgb8888(dst: u32, src: u32, alpha: u8) -> u32 {
     (r_out << 16) | (g_out << 8) | b_out
 }
 
+/// Blends a source 24/32-bit XRGB8888 color over a destination pixel with alpha $\in [0, 255]$.
+#[inline]
+pub(crate) fn blend_xrgb8888(dst: u32, src: u32, alpha: u8) -> u32 {
+    if alpha == 255 {
+        return src;
+    }
+    if alpha == 0 {
+        return dst;
+    }
+    blend_xrgb8888_inner(dst, src, alpha as u32)
+}
+
 /// Blends a solid source 24/32-bit XRGB8888 color across a contiguous slice of destination words.
 #[inline]
-pub fn blend_slice_xrgb8888(dst: &mut [u32], src: u32, alpha: u8) {
+pub(crate) fn blend_slice_xrgb8888(dst: &mut [u32], src: u32, alpha: u8) {
     if alpha == 0 {
         return;
     }
@@ -111,8 +116,9 @@ pub fn blend_slice_xrgb8888(dst: &mut [u32], src: u32, alpha: u8) {
         return;
     }
 
+    let a = alpha as u32;
     for pixel in dst.iter_mut() {
-        *pixel = blend_xrgb8888(*pixel, src, alpha);
+        *pixel = blend_xrgb8888_inner(*pixel, src, a);
     }
 }
 

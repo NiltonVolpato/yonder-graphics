@@ -4,23 +4,23 @@
 //! while ensuring non-commutativity so drawing order changes trigger damage.
 
 /// Tool identifier for solid rectangle blending (`DamageTarget::blend_solid` when $\alpha = 255$).
-pub const TOOL_ID_SOLID_RECT: u8 = 2;
+pub(crate) const TOOL_ID_SOLID_RECT: u8 = 2;
 
 /// Tool identifier for styled shape or alpha rectangle rasterization (`DamageTarget::blend_solid`).
-pub const TOOL_ID_SHAPE: u8 = 3;
+pub(crate) const TOOL_ID_SHAPE: u8 = 3;
 
 /// Tool identifier for individual pixel iterator blending (`DamageTarget::blend_iter`).
-pub const TOOL_ID_PIXEL_ITER: u8 = 4;
+pub(crate) const TOOL_ID_PIXEL_ITER: u8 = 4;
 
 /// Tool identifier for contiguous pixel buffer blending (`DamageTarget::blend_contiguous`).
-pub const TOOL_ID_CONTIGUOUS: u8 = 5;
+pub(crate) const TOOL_ID_CONTIGUOUS: u8 = 5;
 
 /// Accumulates a 16-bit token into a running 16-bit tile hash.
 ///
 /// Uses an integer bit-rotation and prime multiplicative step:
 /// Non-commutative: $f(f(h, A), B) \ne f(f(h, B), A)$.
 #[inline(always)]
-pub const fn hash_accumulate(current: u16, token: u16) -> u16 {
+pub(crate) const fn hash_accumulate(current: u16, token: u16) -> u16 {
     // 0x9E37 is the 16-bit golden ratio prime constant (2^16 / phi)
     let mixed = current.wrapping_add(token).rotate_left(5);
     mixed ^ token.wrapping_mul(0x9E37)

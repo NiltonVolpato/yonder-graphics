@@ -99,6 +99,30 @@ impl Rect {
     }
 }
 
+impl From<embedded_graphics_core::primitives::Rectangle> for Rect {
+    #[inline(always)]
+    fn from(rect: embedded_graphics_core::primitives::Rectangle) -> Self {
+        Self::new(
+            rect.top_left.x,
+            rect.top_left.y,
+            rect.size.width,
+            rect.size.height,
+        )
+    }
+}
+
+impl From<&embedded_graphics_core::primitives::Rectangle> for Rect {
+    #[inline(always)]
+    fn from(rect: &embedded_graphics_core::primitives::Rectangle) -> Self {
+        Self::new(
+            rect.top_left.x,
+            rect.top_left.y,
+            rect.size.width,
+            rect.size.height,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

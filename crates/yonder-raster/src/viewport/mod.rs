@@ -66,7 +66,7 @@ impl<'a, C: BlendablePixel> Viewport<'a, C> {
     /// Translates global screen coordinates $(x, y)$ to a local buffer slice index.
     /// Returns `None` if the point falls outside the viewport's bounds.
     #[inline(always)]
-    pub fn global_to_local_index(&self, x: i32, y: i32) -> Option<usize> {
+    pub(crate) fn global_to_local_index(&self, x: i32, y: i32) -> Option<usize> {
         if x >= self.bounds.x
             && x < self.bounds.right()
             && y >= self.bounds.y
@@ -115,7 +115,7 @@ impl<C: BlendablePixel> DrawTarget for Viewport<'_, C> {
 
     #[inline]
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        let count = self.bounds.pixel_count().min(self.buffer.len());
+        let count = self.bounds.pixel_count();
         self.buffer[..count].fill(color.into_storage());
         Ok(())
     }

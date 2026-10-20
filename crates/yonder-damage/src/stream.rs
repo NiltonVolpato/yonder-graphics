@@ -6,7 +6,7 @@ use crate::rect::Rect;
 
 /// Slices a rectangle into horizontal bands that strictly fit within `max_scratchpad_pixels`.
 #[inline]
-pub fn slice_rect_to_bands<F: FnMut(Rect)>(
+pub(crate) fn slice_rect_to_bands<F: FnMut(Rect)>(
     rect: Rect,
     max_scratchpad_pixels: usize,
     mut consumer: F,

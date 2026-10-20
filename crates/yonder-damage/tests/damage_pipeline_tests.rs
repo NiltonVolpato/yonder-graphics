@@ -4,14 +4,14 @@ use yonder_damage::{stream_dirty_bands, DamageGridStorage320x240, Rect, TileHash
 fn test_collision_absorption_via_closing() {
     let mut storage = DamageGridStorage320x240::new();
     let mut grid = storage.as_grid();
-    grid.prev_hashes.fill(0);
-    grid.active_hashes.fill(0);
+    grid.prev_hashes_mut().fill(0);
+    grid.active_hashes_mut().fill(0);
 
     // Simulate an artificial collision in tile (5, 5):
     // Tiles (4, 5) and (6, 5) are dirty. Tile (5, 5) collided and remained 0.
-    grid.touch_tile(4, 5, 0xAAAA);
+    grid.accumulate_tile(4, 5, 0xAAAA);
     // tile (5, 5) left as 0 (simulating collision)
-    grid.touch_tile(6, 5, 0xBBBB);
+    grid.accumulate_tile(6, 5, 0xBBBB);
 
     let mut emitted_rects = [Rect::ZERO; 4];
     let mut count = 0;
@@ -52,7 +52,8 @@ fn test_multi_frame_damage_lifecycle() {
         .finish();
     grid.touch_rect(Rect::new(100, 100, 32, 32), token);
     // If scene is completely static:
-    grid.active_hashes.copy_from_slice(grid.prev_hashes);
+    let (active, prev) = grid.hashes_mut();
+    active.copy_from_slice(prev);
 
     let mut frame2_count = 0;
     stream_dirty_bands(&mut grid, 8192, |_| {
@@ -89,8 +90,8 @@ fn test_band_streaming_capacity_invariants() {
     let mut storage = DamageGridStorage320x240::new();
     let mut grid = storage.as_grid();
     // Dirty entire 320x240 screen (76,800 pixels)
-    grid.active_hashes.fill(0x1234);
-    grid.prev_hashes.fill(0);
+    grid.active_hashes_mut().fill(0x1234);
+    grid.prev_hashes_mut().fill(0);
 
     const CAPACITY: usize = 4096; // 8 KB at RGB565
 

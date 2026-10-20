@@ -118,12 +118,8 @@ fn grow_rect(
     tail: &mut u16,
     start_c: usize,
     start_r: usize,
-) -> Option<Rect> {
+) -> Rect {
     let (span_start, span_end) = scan_row_span(hashes, cols, start_r, start_c);
-    if span_start == span_end {
-        return None;
-    }
-
     let tile_size = DamageGrid::TILE_SIZE as i32;
 
     let mut active_c_start = span_start;
@@ -213,13 +209,12 @@ fn grow_rect(
         curr_r += 1;
     }
 
-    let rect = Rect::new(
+    Rect::new(
         (active_c_start as i32) * tile_size,
         (active_r_start as i32) * tile_size,
         ((active_c_end - active_c_start) as u32) * (tile_size as u32),
         ((active_r_end - active_r_start) as u32) * (tile_size as u32),
-    );
-    Some(rect)
+    )
 }
 
 /// Coalesces dirty tiles in `grid` into minimal rectangular update windows, streaming them to `consumer`.
@@ -265,26 +260,23 @@ pub fn coalesce_dirty_rects_with_threshold<F: FnMut(Rect)>(
             while let Some(queued_idx) = dequeue(hashes, &mut head, &mut tail) {
                 let qr = queued_idx / cols;
                 let qc = queued_idx % cols;
-                if is_dirty(hashes[queued_idx]) {
-                    if let Some(rect) = grow_rect(
-                        hashes,
-                        cols,
-                        rows,
-                        threshold_pixels,
-                        &mut head,
-                        &mut tail,
-                        qc,
-                        qr,
-                    ) {
-                        consumer(rect);
-                    }
-                }
+                let rect = grow_rect(
+                    hashes,
+                    cols,
+                    rows,
+                    threshold_pixels,
+                    &mut head,
+                    &mut tail,
+                    qc,
+                    qr,
+                );
+                consumer(rect);
             }
 
             // Then check the current grid tile
             let idx = r * cols + c;
             if is_dirty(hashes[idx]) {
-                if let Some(rect) = grow_rect(
+                let rect = grow_rect(
                     hashes,
                     cols,
                     rows,
@@ -293,9 +285,8 @@ pub fn coalesce_dirty_rects_with_threshold<F: FnMut(Rect)>(
                     &mut tail,
                     c,
                     r,
-                ) {
-                    consumer(rect);
-                }
+                );
+                consumer(rect);
             }
         }
     }
@@ -304,20 +295,17 @@ pub fn coalesce_dirty_rects_with_threshold<F: FnMut(Rect)>(
     while let Some(queued_idx) = dequeue(hashes, &mut head, &mut tail) {
         let qr = queued_idx / cols;
         let qc = queued_idx % cols;
-        if is_dirty(hashes[queued_idx]) {
-            if let Some(rect) = grow_rect(
-                hashes,
-                cols,
-                rows,
-                threshold_pixels,
-                &mut head,
-                &mut tail,
-                qc,
-                qr,
-            ) {
-                consumer(rect);
-            }
-        }
+        let rect = grow_rect(
+            hashes,
+            cols,
+            rows,
+            threshold_pixels,
+            &mut head,
+            &mut tail,
+            qc,
+            qr,
+        );
+        consumer(rect);
     }
 }
 
@@ -334,8 +322,8 @@ mod tests {
         grid.active_hashes.fill(0);
 
         // Mark tiles (1, 1) and (2, 1) dirty
-        grid.touch_tile(1, 1, 0x1111);
-        grid.touch_tile(2, 1, 0x2222);
+        grid.accumulate_tile(1, 1, 0x1111);
+        grid.accumulate_tile(2, 1, 0x2222);
 
         let mut rects = [Rect::ZERO; 4];
         let mut count = 0;
@@ -359,8 +347,8 @@ mod tests {
         grid.active_hashes.fill(0);
 
         // Mark tiles (1, 1) and (1, 2) dirty (vertical column of 2 tiles)
-        grid.touch_tile(1, 1, 0x1111);
-        grid.touch_tile(1, 2, 0x2222);
+        grid.accumulate_tile(1, 1, 0x1111);
+        grid.accumulate_tile(1, 2, 0x2222);
 
         let mut rects = [Rect::ZERO; 4];
         let mut count = 0;
@@ -381,8 +369,8 @@ mod tests {
         grid.prev_hashes.fill(0);
         grid.active_hashes.fill(0);
 
-        grid.touch_tile(1, 0, 0xAAAA);
-        grid.touch_tile(5, 0, 0xBBBB);
+        grid.accumulate_tile(1, 0, 0xAAAA);
+        grid.accumulate_tile(5, 0, 0xBBBB);
 
         let mut rects = [Rect::ZERO; 4];
         let mut count = 0;
@@ -405,8 +393,8 @@ mod tests {
         grid.prev_hashes.fill(0);
         grid.active_hashes.fill(0);
 
-        grid.touch_tile(1, 0, 0x1111);
-        grid.touch_tile(3, 0, 0x3333);
+        grid.accumulate_tile(1, 0, 0x1111);
+        grid.accumulate_tile(3, 0, 0x3333);
 
         let mut rects = [Rect::ZERO; 4];
         let mut count = 0;
@@ -431,38 +419,38 @@ mod tests {
 
         // Row 8: cols 16..21
         for c in 16..21 {
-            grid.touch_tile(c, 8, 0x1111);
+            grid.accumulate_tile(c, 8, 0x1111);
         }
         // Row 13: col 6
-        grid.touch_tile(6, 13, 0x2222);
+        grid.accumulate_tile(6, 13, 0x2222);
         // Row 14: cols 5..8 and cols 12..18
         for c in 5..8 {
-            grid.touch_tile(c, 14, 0x3333);
+            grid.accumulate_tile(c, 14, 0x3333);
         }
         for c in 12..18 {
-            grid.touch_tile(c, 14, 0x4444);
+            grid.accumulate_tile(c, 14, 0x4444);
         }
         // Row 15: cols 5..9 and cols 12..18
         for c in 5..9 {
-            grid.touch_tile(c, 15, 0x5555);
+            grid.accumulate_tile(c, 15, 0x5555);
         }
         for c in 12..18 {
-            grid.touch_tile(c, 15, 0x6666);
+            grid.accumulate_tile(c, 15, 0x6666);
         }
         // Row 16: cols 5..9 and cols 12..18
         for c in 5..9 {
-            grid.touch_tile(c, 16, 0x7777);
+            grid.accumulate_tile(c, 16, 0x7777);
         }
         for c in 12..18 {
-            grid.touch_tile(c, 16, 0x8888);
+            grid.accumulate_tile(c, 16, 0x8888);
         }
         // Row 17: cols 5..9
         for c in 5..9 {
-            grid.touch_tile(c, 17, 0x9999);
+            grid.accumulate_tile(c, 17, 0x9999);
         }
         // Row 18: cols 4..9
         for c in 4..9 {
-            grid.touch_tile(c, 18, 0xAAAA);
+            grid.accumulate_tile(c, 18, 0xAAAA);
         }
 
         let mut rects = [Rect::ZERO; 8];

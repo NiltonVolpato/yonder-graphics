@@ -134,3 +134,12 @@ coverage-report compact='':
             total = line_coverage["TOTAL"] + 0.0
             print "'$B'TOTAL: ", total, " (", emoji(total), ")'$b'"
         }'
+
+[doc('Run local reviewer agent with swift-1.5-iq3_s')]
+[group('ai')]
+pi prompt:
+    pi --tools read,grep,find,ls,codemode,bash \
+       --model swift-1.5-iq3_s \
+       --append-system-prompt @.agents/reviewer-persona.md \
+       --print "{{ prompt }}"
+

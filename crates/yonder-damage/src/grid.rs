@@ -73,10 +73,10 @@ pub type DamageGridStorage128x128 = DamageGridStorage<8, 8>;
 /// A non-generic borrowed view over a spatial grid of 16x16 pixel tiles tracking damage between successive frames.
 #[derive(Debug)]
 pub struct DamageGrid<'a> {
-    pub cols: usize,
-    pub rows: usize,
-    pub active_hashes: &'a mut [u16],
-    pub prev_hashes: &'a mut [u16],
+    pub(crate) cols: usize,
+    pub(crate) rows: usize,
+    pub(crate) active_hashes: &'a mut [u16],
+    pub(crate) prev_hashes: &'a mut [u16],
     #[cfg(debug_assertions)]
     accumulate_count: usize,
 }
@@ -126,6 +126,36 @@ impl<'a> DamageGrid<'a> {
         (self.rows as u32) * Self::TILE_SIZE
     }
 
+    /// Returns an immutable slice of active tile hashes.
+    #[inline(always)]
+    pub fn active_hashes(&self) -> &[u16] {
+        self.active_hashes
+    }
+
+    /// Returns a mutable slice of active tile hashes.
+    #[inline(always)]
+    pub fn active_hashes_mut(&mut self) -> &mut [u16] {
+        self.active_hashes
+    }
+
+    /// Returns an immutable slice of previous tile hashes.
+    #[inline(always)]
+    pub fn prev_hashes(&self) -> &[u16] {
+        self.prev_hashes
+    }
+
+    /// Returns a mutable slice of previous tile hashes.
+    #[inline(always)]
+    pub fn prev_hashes_mut(&mut self) -> &mut [u16] {
+        self.prev_hashes
+    }
+
+    /// Returns mutable slices to both active and previous tile hashes simultaneously.
+    #[inline(always)]
+    pub fn hashes_mut(&mut self) -> (&mut [u16], &mut [u16]) {
+        (self.active_hashes, self.prev_hashes)
+    }
+
     #[inline(always)]
     pub fn tile_count(&self) -> usize {
         self.cols * self.rows
@@ -134,7 +164,7 @@ impl<'a> DamageGrid<'a> {
     /// Resets all active tile hashes to zero for the start of a new frame pass.
     #[inline]
     pub fn reset_active(&mut self) {
-        let count = self.tile_count().min(self.active_hashes.len());
+        let count = self.tile_count();
         self.active_hashes[..count].fill(0);
     }
 
@@ -142,7 +172,7 @@ impl<'a> DamageGrid<'a> {
     #[inline]
     pub fn clear_solid(&mut self, color: u16) {
         let solid = hash_solid(color);
-        let count = self.tile_count().min(self.active_hashes.len());
+        let count = self.tile_count();
         self.active_hashes[..count].fill(solid);
     }
 
@@ -155,21 +185,28 @@ impl<'a> DamageGrid<'a> {
         }
     }
 
-    /// Accumulates a partial shape token into the tile hash at `(col, row)`.
-    #[inline]
-    pub fn accumulate_tile(&mut self, col: usize, row: usize, token: u16) {
+    /// Accumulates a partial shape token into the tile hash at `(col, row)` without bounds checking.
+    #[inline(always)]
+    pub(crate) fn accumulate_tile_unchecked(&mut self, col: usize, row: usize, token: u16) {
         #[cfg(debug_assertions)]
         {
             self.accumulate_count += 1;
         }
+        let idx = row * self.cols + col;
+        self.active_hashes[idx] = hash_accumulate(self.active_hashes[idx], token);
+    }
+
+    /// Accumulates a partial shape token into the tile hash at `(col, row)`.
+    #[inline]
+    pub fn accumulate_tile(&mut self, col: usize, row: usize, token: u16) {
         if col < self.cols && row < self.rows {
-            let idx = row * self.cols + col;
-            self.active_hashes[idx] = hash_accumulate(self.active_hashes[idx], token);
+            self.accumulate_tile_unchecked(col, row, token);
         }
     }
 
     /// Returns the number of times `accumulate_tile` has been called (debug only).
     #[cfg(debug_assertions)]
+    #[doc(hidden)]
     #[inline(always)]
     pub fn accumulate_count(&self) -> usize {
         self.accumulate_count
@@ -177,6 +214,7 @@ impl<'a> DamageGrid<'a> {
 
     /// Resets the accumulate invocation counter to zero (debug only).
     #[cfg(debug_assertions)]
+    #[doc(hidden)]
     #[inline(always)]
     pub fn reset_accumulate_count(&mut self) {
         self.accumulate_count = 0;
@@ -205,38 +243,37 @@ impl<'a> DamageGrid<'a> {
         }
     }
 
-    /// Accumulates a hash token into the specified tile `(col, row)`.
-    ///
-    /// Equivalent to [`accumulate_tile`](Self::accumulate_tile).
-    #[inline(always)]
-    pub fn touch_tile(&mut self, col: usize, row: usize, token: u16) {
-        self.accumulate_tile(col, row, token);
+    /// Returns the inclusive range of tile indices `(c_start, c_end, r_start, r_end)`
+    /// intersected by `rect`, or `None` if `rect` does not intersect the grid or is empty.
+    #[inline]
+    pub(crate) fn tile_range(&self, rect: Rect) -> Option<(usize, usize, usize, usize)> {
+        let grid_rect = Rect::new(0, 0, self.width(), self.height());
+        let clipped = rect.intersection(&grid_rect)?;
+        if clipped.is_empty() {
+            return None;
+        }
+
+        let c_start = (clipped.x as u32 / Self::TILE_SIZE) as usize;
+        let c_end = ((clipped.right() - 1) as u32 / Self::TILE_SIZE) as usize;
+        let r_start = (clipped.y as u32 / Self::TILE_SIZE) as usize;
+        let r_end = ((clipped.bottom() - 1) as u32 / Self::TILE_SIZE) as usize;
+
+        Some((
+            c_start,
+            c_end.min(self.cols.saturating_sub(1)),
+            r_start,
+            r_end.min(self.rows.saturating_sub(1)),
+        ))
     }
 
     /// Accumulates a hash token across all 16x16 tiles intersected by `rect`.
     #[inline]
     pub fn touch_rect(&mut self, rect: Rect, token: u16) {
-        let width = self.width();
-        let height = self.height();
-        if rect.is_empty() || rect.x >= width as i32 || rect.y >= height as i32 {
-            return;
-        }
-
-        let right = rect.right();
-        let bottom = rect.bottom();
-        if right <= 0 || bottom <= 0 {
-            return;
-        }
-
-        let c_start = (rect.x.max(0) as u32 / Self::TILE_SIZE) as usize;
-        let c_end = (((right - 1).max(0) as u32 / Self::TILE_SIZE) as usize).min(self.cols - 1);
-
-        let r_start = (rect.y.max(0) as u32 / Self::TILE_SIZE) as usize;
-        let r_end = (((bottom - 1).max(0) as u32 / Self::TILE_SIZE) as usize).min(self.rows - 1);
-
-        for r in r_start..=r_end {
-            for c in c_start..=c_end {
-                self.accumulate_tile(c, r, token);
+        if let Some((c_start, c_end, r_start, r_end)) = self.tile_range(rect) {
+            for r in r_start..=r_end {
+                for c in c_start..=c_end {
+                    self.accumulate_tile_unchecked(c, r, token);
+                }
             }
         }
     }
@@ -255,10 +292,7 @@ impl<'a> DamageGrid<'a> {
     /// Copies the active hashes to the previous hashes and clears active hashes for the next frame.
     #[inline]
     pub fn swap_buffers(&mut self) {
-        let count = self
-            .tile_count()
-            .min(self.active_hashes.len())
-            .min(self.prev_hashes.len());
+        let count = self.tile_count();
         self.prev_hashes[..count].copy_from_slice(&self.active_hashes[..count]);
         self.active_hashes[..count].fill(0);
     }
@@ -266,7 +300,7 @@ impl<'a> DamageGrid<'a> {
     /// Forces all tiles to be marked dirty on the next comparison.
     #[inline]
     pub fn mark_all_dirty(&mut self) {
-        let count = self.tile_count().min(self.prev_hashes.len());
+        let count = self.tile_count();
         for prev in self.prev_hashes[..count].iter_mut() {
             *prev = prev.wrapping_add(1);
         }
@@ -276,7 +310,7 @@ impl<'a> DamageGrid<'a> {
 /// A typed drawing target adapter wrapping a [`DamageGrid`] for an arbitrary pixel color `C`.
 #[derive(Debug)]
 pub struct DamageTarget<'t, 'a, C = Rgb565> {
-    pub grid: &'t mut DamageGrid<'a>,
+    pub(crate) grid: &'t mut DamageGrid<'a>,
     pub(crate) _color: core::marker::PhantomData<fn() -> C>,
 }
 
@@ -299,27 +333,18 @@ where
         color: C,
         alpha: u8,
     ) -> Result<(), core::convert::Infallible> {
-        if alpha == 0 || area.size.width == 0 || area.size.height == 0 {
+        if alpha == 0 {
             return Ok(());
         }
+
+        let Some((c_start, c_end, r_start, r_end)) = self.grid.tile_range(Rect::from(area)) else {
+            return Ok(());
+        };
 
         let raw: u32 = color.into_storage().into();
         let top_left = area.top_left;
         let right = top_left.x + area.size.width as i32;
         let bottom = top_left.y + area.size.height as i32;
-
-        let width = self.grid.width() as i32;
-        let height = self.grid.height() as i32;
-        if right <= 0 || bottom <= 0 || top_left.x >= width || top_left.y >= height {
-            return Ok(());
-        }
-
-        let c_start = (top_left.x.max(0) as u32 / DamageGrid::TILE_SIZE) as usize;
-        let c_end = (((right - 1).max(0) as u32 / DamageGrid::TILE_SIZE) as usize)
-            .min(self.grid.cols.saturating_sub(1));
-        let r_start = (top_left.y.max(0) as u32 / DamageGrid::TILE_SIZE) as usize;
-        let r_end = (((bottom - 1).max(0) as u32 / DamageGrid::TILE_SIZE) as usize)
-            .min(self.grid.rows.saturating_sub(1));
 
         if alpha == 255 {
             let color_hash = hash_solid((raw ^ (raw >> 16)) as u16);
@@ -344,7 +369,7 @@ where
                     if row_fully_covered && col_fully_covered {
                         self.grid.active_hashes[r * self.grid.cols + c] = color_hash;
                     } else {
-                        self.grid.accumulate_tile(c, r, token);
+                        self.grid.accumulate_tile_unchecked(c, r, token);
                     }
                 }
             }
@@ -359,7 +384,7 @@ where
                 .finish();
             for r in r_start..=r_end {
                 for c in c_start..=c_end {
-                    self.grid.accumulate_tile(c, r, token);
+                    self.grid.accumulate_tile_unchecked(c, r, token);
                 }
             }
         }
@@ -382,7 +407,7 @@ where
                         .write_u32(raw)
                         .write_u8(alpha)
                         .finish();
-                    self.grid.accumulate_tile(col, row, token);
+                    self.grid.accumulate_tile_unchecked(col, row, token);
                     last_tile = (col, row);
                 }
             }
@@ -399,22 +424,9 @@ where
     where
         I: IntoIterator<Item = (C, u8)>,
     {
-        let top_left = area.top_left;
-        let right = top_left.x + area.size.width as i32;
-        let bottom = top_left.y + area.size.height as i32;
-
-        let width = self.grid.width() as i32;
-        let height = self.grid.height() as i32;
-        if right <= 0 || bottom <= 0 || top_left.x >= width || top_left.y >= height {
+        let Some((c_start, c_end, r_start, r_end)) = self.grid.tile_range(Rect::from(area)) else {
             return Ok(());
-        }
-
-        let c_start = (top_left.x.max(0) as u32 / DamageGrid::TILE_SIZE) as usize;
-        let c_end = (((right - 1).max(0) as u32 / DamageGrid::TILE_SIZE) as usize)
-            .min(self.grid.cols.saturating_sub(1));
-        let r_start = (top_left.y.max(0) as u32 / DamageGrid::TILE_SIZE) as usize;
-        let r_end = (((bottom - 1).max(0) as u32 / DamageGrid::TILE_SIZE) as usize)
-            .min(self.grid.rows.saturating_sub(1));
+        };
 
         let mut hasher = TileHasher::new(TOOL_ID_CONTIGUOUS);
         let mut has_visible = false;
@@ -432,7 +444,7 @@ where
 
         for r in r_start..=r_end {
             for c in c_start..=c_end {
-                self.grid.accumulate_tile(c, r, token);
+                self.grid.accumulate_tile_unchecked(c, r, token);
             }
         }
         Ok(())
