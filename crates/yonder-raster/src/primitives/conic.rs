@@ -359,51 +359,89 @@ pub fn rasterize_conic_aa<C: Copy, T: CompositingTarget<Color = C>>(
     let end_x = bounds.right();
 
     for y in bounds.y..end_y {
-        let mut solid_start: Option<i32> = None;
-        let mut solid_end: Option<i32> = None;
-        let mut has_drawn_on_row = false;
+        // Phase 1: Fast Center Stepper
+        // Evaluates strictly at pixel centers [2x + 1, 2y + 1, 2]^T using incremental 2nd-order differences.
+        let mut stepper = conic.scanline_stepper(bounds.x, y);
+        let mut center_first: Option<i32> = None;
+        let mut center_last: Option<i32> = None;
 
         for x in bounds.x..end_x {
-            let cov = compute_corner_coverage(conic, x, y);
-
-            if cov == 0 {
-                if let (Some(x_start), Some(x_end)) = (solid_start, solid_end) {
-                    let width = (x_end - x_start + 1) as u32;
-                    let rect = Rectangle::new(Point::new(x_start, y), Size::new(width, 1));
-                    target.blend_solid(&rect, color, alpha)?;
-                    solid_start = None;
-                    solid_end = None;
+            if stepper.step_inside() {
+                if center_first.is_none() {
+                    center_first = Some(x);
                 }
-                if has_drawn_on_row {
-                    break;
-                }
-            } else if cov == 255 {
-                has_drawn_on_row = true;
-                if solid_start.is_none() {
-                    solid_start = Some(x);
-                }
-                solid_end = Some(x);
-            } else {
-                has_drawn_on_row = true;
-                if let (Some(x_start), Some(x_end)) = (solid_start, solid_end) {
-                    let width = (x_end - x_start + 1) as u32;
-                    let rect = Rectangle::new(Point::new(x_start, y), Size::new(width, 1));
-                    target.blend_solid(&rect, color, alpha)?;
-                    solid_start = None;
-                    solid_end = None;
-                }
-                let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
-                if pixel_alpha > 0 {
-                    let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
-                    target.blend_solid(&rect, color, pixel_alpha)?;
-                }
+                center_last = Some(x);
             }
         }
 
-        // Flush remaining solid span for this row
-        if let (Some(x_start), Some(x_end)) = (solid_start, solid_end) {
-            let width = (x_end - x_start + 1) as u32;
-            let rect = Rectangle::new(Point::new(x_start, y), Size::new(width, 1));
+        let (x_center_first, x_center_last) = match (center_first, center_last) {
+            (Some(first), Some(last)) => (first, last),
+            _ => continue, // Entire scanline has Q_center > 0; skip row
+        };
+
+        // Phase 2: Left Boundary Walk
+        // 2a. Walk outwards from x_center_first - 1 down to bounds.x
+        for x in (bounds.x..x_center_first).rev() {
+            let cov = compute_corner_coverage(conic, x, y);
+            if cov == 0 {
+                break;
+            }
+            let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
+            if pixel_alpha > 0 {
+                let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
+                target.blend_solid(&rect, color, pixel_alpha)?;
+            }
+        }
+
+        // 2b. Walk inwards from x_center_first towards the center to find where solid starts
+        let mut solid_start = x_center_last + 1;
+        for x in x_center_first..=x_center_last {
+            let cov = compute_corner_coverage(conic, x, y);
+            if cov == 255 {
+                solid_start = x;
+                break;
+            }
+            let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
+            if pixel_alpha > 0 {
+                let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
+                target.blend_solid(&rect, color, pixel_alpha)?;
+            }
+        }
+
+        // Phase 3: Right Boundary Walk
+        // 3a. Walk inwards from x_center_last towards the left to find where solid ends
+        let mut solid_end = x_center_first - 1;
+        let right_inward_stop = solid_start.max(x_center_first);
+        for x in (right_inward_stop..=x_center_last).rev() {
+            let cov = compute_corner_coverage(conic, x, y);
+            if cov == 255 {
+                solid_end = x;
+                break;
+            }
+            let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
+            if pixel_alpha > 0 {
+                let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
+                target.blend_solid(&rect, color, pixel_alpha)?;
+            }
+        }
+
+        // 3b. Walk outwards from x_center_last + 1 up to end_x
+        for x in (x_center_last + 1)..end_x {
+            let cov = compute_corner_coverage(conic, x, y);
+            if cov == 0 {
+                break;
+            }
+            let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
+            if pixel_alpha > 0 {
+                let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
+                target.blend_solid(&rect, color, pixel_alpha)?;
+            }
+        }
+
+        // Phase 4: Solid Interior Span
+        if solid_start <= solid_end {
+            let width = (solid_end - solid_start + 1) as u32;
+            let rect = Rectangle::new(Point::new(solid_start, y), Size::new(width, 1));
             target.blend_solid(&rect, color, alpha)?;
         }
     }
@@ -504,11 +542,12 @@ mod tests {
     fn test_conic_aa_pixel_corners_quadrant_symmetry() {
         let circle = ConicMatrix::circle(0, 0, 10);
 
-        // Pixel [7..8] x [7..8] vs its exact mirrors across axes
+        // Pixel (7, 7) vs its exact mirrors across pixel (0, 0) (center at [1, 1, 2]):
+        // Mirroring (0.5 + 7, 0.5 + 7) across (0.5, 0.5) gives (-7, 7), (-7, -7), (7, -7).
         let cov_q1 = compute_corner_coverage(&circle, 7, 7);
-        let cov_q2 = compute_corner_coverage(&circle, -8, 7);
-        let cov_q3 = compute_corner_coverage(&circle, -8, -8);
-        let cov_q4 = compute_corner_coverage(&circle, 7, -8);
+        let cov_q2 = compute_corner_coverage(&circle, -7, 7);
+        let cov_q3 = compute_corner_coverage(&circle, -7, -7);
+        let cov_q4 = compute_corner_coverage(&circle, 7, -7);
 
         assert_eq!(cov_q1, cov_q2);
         assert_eq!(cov_q1, cov_q3);
@@ -517,13 +556,100 @@ mod tests {
     }
 
     #[test]
+    fn test_small_circle_eight_way_symmetry() {
+        let cx = 10;
+        let cy = 10;
+        let r = 3;
+        let circle = ConicMatrix::circle(cx, cy, r);
+
+        for dy in 0..=r + 1 {
+            for dx in 0..=r + 1 {
+                let cov_pp = compute_corner_coverage(&circle, cx + dx, cy + dy);
+                let cov_np = compute_corner_coverage(&circle, cx - dx, cy + dy);
+                let cov_pn = compute_corner_coverage(&circle, cx + dx, cy - dy);
+                let cov_nn = compute_corner_coverage(&circle, cx - dx, cy - dy);
+                let cov_diag = compute_corner_coverage(&circle, cx + dy, cy + dx);
+
+                assert_eq!(cov_pp, cov_np, "Symmetry mismatch at dx={dx}, dy={dy}");
+                assert_eq!(cov_pp, cov_pn, "Symmetry mismatch at dx={dx}, dy={dy}");
+                assert_eq!(cov_pp, cov_nn, "Symmetry mismatch at dx={dx}, dy={dy}");
+                assert_eq!(
+                    cov_pp, cov_diag,
+                    "Diagonal symmetry mismatch at dx={dx}, dy={dy}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rasterize_conic_aa_two_phase_ground_truth_equivalence() {
+        let bounds = Rect::new(0, 0, 64, 64);
+        let color = Rgb565::new(31, 20, 10);
+        let alpha = 200u8;
+
+        // 1. Circle test
+        {
+            let mut mem_fast = [0u16; 64 * 64];
+            let mut mem_ref = [0u16; 64 * 64];
+            let mut target_fast = Viewport::new(&mut mem_fast, bounds);
+            let mut target_ref = Viewport::new(&mut mem_ref, bounds);
+
+            let circle = ConicMatrix::circle(30, 30, 15);
+            let draw_bounds = Rect::new(14, 14, 33, 33);
+
+            rasterize_conic_aa(&mut target_fast, &circle, draw_bounds, color, alpha).unwrap();
+
+            for y in draw_bounds.y..draw_bounds.bottom() {
+                for x in draw_bounds.x..draw_bounds.right() {
+                    let cov = compute_corner_coverage(&circle, x, y);
+                    let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
+                    if pixel_alpha > 0 {
+                        let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
+                        target_ref.blend_solid(&rect, color, pixel_alpha).unwrap();
+                    }
+                }
+            }
+
+            assert_eq!(
+                target_fast.buffer(),
+                target_ref.buffer(),
+                "Circle two-phase mismatch!"
+            );
+        }
+
+        // 2. Ellipse test
+        {
+            let mut mem_fast = [0u16; 64 * 64];
+            let mut mem_ref = [0u16; 64 * 64];
+            let mut target_fast = Viewport::new(&mut mem_fast, bounds);
+            let mut target_ref = Viewport::new(&mut mem_ref, bounds);
+
+            let ellipse = ConicMatrix::ellipse(32, 28, 20, 10);
+            let ellipse_bounds = Rect::new(11, 17, 43, 23);
+
+            rasterize_conic_aa(&mut target_fast, &ellipse, ellipse_bounds, color, alpha).unwrap();
+
+            for y in ellipse_bounds.y..ellipse_bounds.bottom() {
+                for x in ellipse_bounds.x..ellipse_bounds.right() {
+                    let cov = compute_corner_coverage(&ellipse, x, y);
+                    let pixel_alpha = ((alpha as u32 * cov as u32 + 128) / 255) as u8;
+                    if pixel_alpha > 0 {
+                        let rect = Rectangle::new(Point::new(x, y), Size::new(1, 1));
+                        target_ref.blend_solid(&rect, color, pixel_alpha).unwrap();
+                    }
+                }
+            }
+
+            assert_eq!(
+                target_fast.buffer(),
+                target_ref.buffer(),
+                "Ellipse two-phase mismatch!"
+            );
+        }
+    }
+
+    #[test]
     fn test_conic_aa_straight_cuts() {
-        // A large circle with radius 1000 centered at (1000, 0)
-        // At x = 0, the boundary is effectively a vertical line at x = 0.
-        // Pixel [0..1] x [0..1] has left edge at x = 0 (on boundary), right edge at x = 1 (outside).
-        // Center is at (0.5, 0.5), which is outside the circle since center of circle is at x = 1000.
-        // Let's create a circle centered at (0, 0) with radius 10.
-        // At y = 0, edge crosses near x = 10.
         let circle = ConicMatrix::circle(0, 0, 10);
         let cov_inside = compute_corner_coverage(&circle, 0, 0);
         assert_eq!(cov_inside, 255);

@@ -93,7 +93,7 @@ fn test_conic_ellipse_incremental_stepper() {
     for y in 25..=75 {
         let mut stepper = ellipse.scanline_stepper(10, y);
         for x in 10..=90 {
-            let direct = ellipse.evaluate_pixel(x, y);
+            let direct = ellipse.evaluate_pixel_center(x, y);
             assert_eq!(stepper.current_q, direct, "Failed at ({x}, {y})");
             assert_eq!(stepper.is_inside(), direct <= 0);
             stepper.advance();

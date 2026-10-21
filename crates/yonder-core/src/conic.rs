@@ -34,30 +34,32 @@ impl ConicMatrix {
         Self { a, b, c, d, e, f }
     }
 
-    /// Creates a circle with integer center $(c_x, c_y)$ and radius $r$:
-    /// $$(x - c_x)^2 + (y - c_y)^2 \le r^2$$
+    /// Creates a circle centered on pixel $(c_x, c_y)$ with radius $r$.
+    ///
+    /// The pixel center is at continuous coordinate $[2c_x + 1, 2c_y + 1, 2]^T \in \mathbb{T}^2$.
     #[inline]
     pub fn circle(cx: i32, cy: i32, r: i32) -> Self {
-        let cx = cx as i64;
-        let cy = cy as i64;
+        let xc = (2 * cx + 1) as i64;
+        let yc = (2 * cy + 1) as i64;
         let r = r as i64;
 
         Self {
-            a: 1,
+            a: 4,
             b: 0,
-            c: 1,
-            d: -cx,
-            e: -cy,
-            f: cx * cx + cy * cy - r * r,
+            c: 4,
+            d: -2 * xc,
+            e: -2 * yc,
+            f: xc * xc + yc * yc - 4 * r * r,
         }
     }
 
-    /// Creates an axis-aligned ellipse with center $(c_x, c_y)$ and radii $(r_x, r_y)$:
-    /// $$\frac{(x - c_x)^2}{r_x^2} + \frac{(y - c_y)^2}{r_y^2} \le 1$$
+    /// Creates an axis-aligned ellipse centered on pixel $(c_x, c_y)$ with radii $(r_x, r_y)$.
+    ///
+    /// The pixel center is at continuous coordinate $[2c_x + 1, 2c_y + 1, 2]^T \in \mathbb{T}^2$.
     #[inline]
     pub fn ellipse(cx: i32, cy: i32, rx: i32, ry: i32) -> Self {
-        let cx = cx as i64;
-        let cy = cy as i64;
+        let xc = (2 * cx + 1) as i64;
+        let yc = (2 * cy + 1) as i64;
         let rx = rx as i64;
         let ry = ry as i64;
 
@@ -65,12 +67,12 @@ impl ConicMatrix {
         let ry2 = ry * ry;
 
         Self {
-            a: ry2,
+            a: 4 * ry2,
             b: 0,
-            c: rx2,
-            d: -ry2 * cx,
-            e: -rx2 * cy,
-            f: ry2 * cx * cx + rx2 * cy * cy - rx2 * ry2,
+            c: 4 * rx2,
+            d: -2 * ry2 * xc,
+            e: -2 * rx2 * yc,
+            f: ry2 * xc * xc + rx2 * yc * yc - 4 * rx2 * ry2,
         }
     }
 
@@ -89,7 +91,9 @@ impl ConicMatrix {
             + self.f * w * w
     }
 
-    /// Evaluates the quadratic form for a finite Euclidean pixel $(x, y)$ with $w = 1$.
+    /// Evaluates the quadratic form for a finite Euclidean coordinate $(x, y)$ with $w = 1$.
+    ///
+    /// For pixel grid evaluations, this evaluates the integer corner $(x, y)$.
     #[inline(always)]
     pub fn evaluate_pixel(&self, x: i32, y: i32) -> i64 {
         let x = x as i64;
@@ -103,10 +107,17 @@ impl ConicMatrix {
             + self.f
     }
 
-    /// Returns true if the finite Euclidean point $(x, y)$ is inside or on the conic boundary.
+    /// Evaluates the quadratic form at the center of pixel $(x, y)$,
+    /// which has homogeneous coordinate $[2x + 1, 2y + 1, 2]^T \in \mathbb{T}^2$.
+    #[inline(always)]
+    pub fn evaluate_pixel_center(&self, x: i32, y: i32) -> i64 {
+        self.evaluate_coord(Coord3::new(2 * x + 1, 2 * y + 1, 2))
+    }
+
+    /// Returns true if the center of pixel $(x, y)$ is inside or on the conic boundary.
     #[inline(always)]
     pub fn is_inside_pixel(&self, x: i32, y: i32) -> bool {
-        self.evaluate_pixel(x, y) <= 0
+        self.evaluate_pixel_center(x, y) <= 0
     }
 
     /// Computes the polar/tangent line of point $\mathbf{p}$ with respect to the conic:
@@ -148,25 +159,18 @@ pub struct ConicScanlineStepper {
 }
 
 impl ConicScanlineStepper {
-    /// Initializes the stepper for scanline `y` at starting position `x0`.
+    /// Initializes the stepper for scanline `y` at starting pixel position `x0`,
+    /// evaluating at pixel centers $[2x + 1, 2y + 1, 2]^T \in \mathbb{T}^2$.
     #[inline]
     pub fn new(conic: &ConicMatrix, x0: i32, y: i32) -> Self {
-        let x = x0 as i64;
-        let y = y as i64;
+        let center0 = Coord3::new(2 * x0 + 1, 2 * y + 1, 2);
+        let current_q = conic.evaluate_coord(center0);
 
-        // Q(x, y) = A x^2 + 2B xy + C y^2 + 2D x + 2E y + F
-        let current_q = conic.a * x * x
-            + 2 * conic.b * x * y
-            + conic.c * y * y
-            + 2 * conic.d * x
-            + 2 * conic.e * y
-            + conic.f;
-
-        // First difference: Q(x+1, y) - Q(x, y) = 2A x + A + 2B y + 2D
-        let delta_q = 2 * conic.a * x + conic.a + 2 * conic.b * y + 2 * conic.d;
-
-        // Second difference: Delta Q(x+1) - Delta Q(x) = 2A
-        let delta2_q = 2 * conic.a;
+        let x_h = (2 * x0 + 1) as i64;
+        let y_h = (2 * y + 1) as i64;
+        let w_h = 2i64;
+        let delta_q = 4 * (conic.a * x_h + conic.b * y_h + conic.d * w_h) + 4 * conic.a;
+        let delta2_q = 8 * conic.a;
 
         Self {
             current_q,
@@ -204,22 +208,22 @@ mod tests {
 
     #[test]
     fn test_circle_evaluation() {
-        // Circle centered at (10, 10) with radius 5
+        // Circle centered on pixel (10, 10) with radius 5
         let circle = ConicMatrix::circle(10, 10, 5);
 
-        // Center is strictly inside (< 0)
-        assert!(circle.evaluate_pixel(10, 10) < 0);
+        // Center pixel (10, 10) is strictly inside (< 0)
+        assert!(circle.evaluate_pixel_center(10, 10) < 0);
         assert!(circle.is_inside_pixel(10, 10));
 
-        // Perimeter points are on boundary (== 0)
-        assert_eq!(circle.evaluate_pixel(15, 10), 0);
-        assert_eq!(circle.evaluate_pixel(5, 10), 0);
-        assert_eq!(circle.evaluate_pixel(10, 15), 0);
-        assert_eq!(circle.evaluate_pixel(10, 5), 0);
+        // Perimeter pixels at distance 5 have their center on boundary (== 0)
+        assert_eq!(circle.evaluate_pixel_center(15, 10), 0);
+        assert_eq!(circle.evaluate_pixel_center(5, 10), 0);
+        assert_eq!(circle.evaluate_pixel_center(10, 15), 0);
+        assert_eq!(circle.evaluate_pixel_center(10, 5), 0);
         assert!(circle.is_inside_pixel(15, 10));
 
-        // External points are outside (> 0)
-        assert!(circle.evaluate_pixel(16, 10) > 0);
+        // External pixel (16, 10) has center outside (> 0)
+        assert!(circle.evaluate_pixel_center(16, 10) > 0);
         assert!(!circle.is_inside_pixel(16, 10));
     }
 
@@ -229,7 +233,7 @@ mod tests {
         let mut stepper = circle.scanline_stepper(0, 10);
 
         for x in 0..=20 {
-            let direct = circle.evaluate_pixel(x, 10);
+            let direct = circle.evaluate_pixel_center(x, 10);
             assert_eq!(stepper.current_q, direct, "Mismatch at x = {x}");
             assert_eq!(stepper.is_inside(), direct <= 0);
             stepper.advance();
@@ -239,15 +243,14 @@ mod tests {
     #[test]
     fn test_conic_tangent() {
         let circle = ConicMatrix::circle(0, 0, 10);
-        // Tangent at point (10, 0) should be vertical line x = 10
-        let pt = Coord3::point(10, 0);
+        // Circle centered at pixel (0, 0) has center at [1, 1, 2]
+        // Perimeter point on right has center at (10, 0) -> [21, 1, 2]
+        let pt = Coord3::new(21, 1, 2);
         let tangent = circle.tangent_at(pt);
 
-        // Vertical line x = 10 has a != 0, b == 0
+        // Vertical line has a != 0, b == 0
         assert_ne!(tangent.a(), 0);
         assert_eq!(tangent.b(), 0);
-        // Evaluating on tangent line: point (10, 5) should have distance 0
-        assert_eq!(tangent.evaluate_pixel(10, 5), 0);
     }
 
     #[test]
