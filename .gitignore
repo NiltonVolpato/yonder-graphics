@@ -1,5 +1,6 @@
 /target
 *.png
+*.svg
 *.trace
 cargo-flamegraph.trace/
 flamegraph.svg

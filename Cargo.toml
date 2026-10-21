@@ -27,3 +27,7 @@ embedded-graphics = { version = "0.8.2", default-features = false }
 
 [profile.bench]
 debug = true
+
+# embedded-graphics 0.8.2 uses i32 arithmetic that overflows on large canvases (> 500px).
+[profile.dev.package.embedded-graphics]
+overflow-checks = false
