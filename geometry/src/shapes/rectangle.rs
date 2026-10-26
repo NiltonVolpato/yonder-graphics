@@ -1,5 +1,6 @@
 use crate::screen::{Bounded, BoundingBox, Point};
 
+#[derive(Clone, Copy, Hash)]
 pub struct Rectangle {
     pub top_left: Point,
     pub bottom_right: Point,

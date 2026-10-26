@@ -49,6 +49,11 @@ check +args='--workspace --all-targets':
 test +args='--workspace':
     {{ CARGO }} test --quiet {{ args }} --lib --tests
 
+[doc('Render the gallery scenes to target/gallery/*.png')]
+[group('test')]
+gallery:
+    {{ CARGO }} run --quiet -p yonder-gallery
+
 [doc('Run Criterion benchmarks')]
 [group('test')]
 bench +args='':

@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 yonder-geometry.workspace = true
+
+[dev-dependencies]
+yonder-geometry = { workspace = true, features = ["std"] }

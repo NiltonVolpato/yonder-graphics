@@ -1,0 +1,10 @@
+[package]
+name = "yonder-gallery"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Scenes that use the API as a downstream crate would, rendered to PNG."
+
+[dependencies]
+yonder-graphics.workspace = true
+png = "0.18"

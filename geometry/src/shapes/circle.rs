@@ -1,12 +1,68 @@
+use core::hash::{Hash, Hasher};
+
+use crate::projective::PointT2;
 use crate::screen::{Bounded, BoundingBox, Point};
 
+/// A circle with a homogeneous center, so it can sit on a lattice point
+/// (`[x, y, 1]`) or on a pixel center (`[2x + 1, 2y + 1, 2]`).
+#[derive(Clone, Copy)]
 pub struct Circle {
-    pub center: Point,
-    pub radius: i16,
+    center: PointT2,
+    // In the center's units: the radius in pixels is `radius / w`.
+    radius: i32,
+}
+
+impl Circle {
+    /// A circle of `radius` pixels. `center` must be on the hither side (`w > 0`).
+    pub const fn new(center: PointT2, radius: i16) -> Self {
+        let (_, _, w) = center.coords();
+        debug_assert!(w > 0, "circle center must have w > 0");
+        Self {
+            center,
+            radius: radius as i32 * w,
+        }
+    }
+
+    /// The circle inscribed in `bounds`. If `bounds` isn't square, the circle uses the
+    /// shorter side and is centered.
+    pub const fn in_box(bounds: BoundingBox) -> Self {
+        let (tl, br) = (bounds.top_left, bounds.bottom_right);
+        let side = if bounds.width() < bounds.height() {
+            bounds.width()
+        } else {
+            bounds.height()
+        };
+        Self {
+            center: PointT2::new(tl.x as i32 + br.x as i32, tl.y as i32 + br.y as i32, 2),
+            radius: side as i32,
+        }
+    }
+
+    /// The circle as integers `[x, y, w, r]`: center `(x / w, y / w)`, radius `r / w`, `w > 0`.
+    pub const fn homogeneous(&self) -> [i32; 4] {
+        let (x, y, w) = self.center.coords();
+        [x, y, w, self.radius]
+    }
 }
 
 impl Bounded for Circle {
     fn bounds(&self) -> BoundingBox {
-        todo!()
+        let [x, y, w, r] = self.homogeneous();
+        let lo = |c: i32| {
+            (c - r)
+                .div_euclid(w)
+                .clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        };
+        let hi =
+            |c: i32| (-(-(c + r)).div_euclid(w)).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        BoundingBox::new(Point::new(lo(x), lo(y)), Point::new(hi(x), hi(y)))
+    }
+}
+
+// Hashes this representation: an equal circle written with a different scale hashes
+// differently, which can only cause extra damage, never missed damage.
+impl Hash for Circle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.homogeneous().hash(state);
     }
 }
