@@ -126,8 +126,8 @@ impl Chords {
         }
     }
 
-    /// The lattice points inside the disk on `line`: the current line or the next one.
-    fn inside_on(&mut self, line: i16) -> RangeInclusive<i16> {
+    /// The disk on `line`: the current line or the next one.
+    fn line(&mut self, line: i16) -> Line {
         debug_assert!(line == self.line || line == self.line + 1);
         if line != self.line {
             self.value += 4 * self.offset_y + 4;
@@ -151,14 +151,40 @@ impl Chords {
             self.offset_x -= 2;
             self.left -= 1;
         }
-        if self.value <= 0 {
+        let (inside, crossing) = if self.value <= 0 {
             let right = self.disk.center_x - self.left;
-            screen(self.left)..=screen(right)
+            let outside = self.value - 4 * self.offset_x + 4;
+            let crossing = round_div(outside * SIDE, outside - self.value);
+            (screen(self.left)..=screen(right), crossing)
         } else {
             // No lattice point inside: an empty range.
-            RangeInclusive::new(1, 0)
+            (RangeInclusive::new(1, 0), 0)
+        };
+        Line {
+            inside,
+            left: self.left,
+            value: self.value,
+            offset_x: self.offset_x,
+            offset_y: self.offset_y,
+            crossing,
         }
     }
+}
+
+/// One lattice line of a disk: its inside points, and what the edge cells next to its left
+/// end need. The right end is the mirror of the left one.
+struct Line {
+    inside: RangeInclusive<i16>,
+    /// The leftmost inside point, unclamped.
+    left: i32,
+    /// The implicit function at `(left, line)`, and `2 · left − center_x`.
+    value: i32,
+    offset_x: i32,
+    /// `2 · line − center_y`.
+    offset_y: i32,
+    /// Where the line crosses the circle between `left − 1` and `left`, as a distance from
+    /// `left − 1` in 1/SIDE. Shared by the rows above and below the line.
+    crossing: i32,
 }
 
 /// Cells of one row as half-open x ranges: `touched` may be covered, `full` is.
@@ -230,19 +256,149 @@ fn rasterize(outer: Disk, inner: Option<Disk>, clip: BoundingBox, emit: &mut imp
     let clip_x = (clip.top_left.x, clip.bottom_right.x);
     let mut outer_chords = Chords::new(outer, first);
     let mut inner_chords = inner.map(|disk| Chords::new(disk, first));
-    let mut outer_top = outer_chords.inside_on(first);
-    let mut inner_top = inner_chords.as_mut().map(|chords| chords.inside_on(first));
+    let mut outer_top = outer_chords.line(first);
+    let mut inner_top = inner_chords.as_mut().map(|chords| chords.line(first));
     for y in first..end {
-        let outer_bottom = outer_chords.inside_on(y + 1);
-        let inner_bottom = inner_chords.as_mut().map(|chords| chords.inside_on(y + 1));
-        let outer_profile = profile(&outer, y, &outer_top, &outer_bottom);
-        let inner_profile = match (inner, &inner_top, &inner_bottom) {
-            (Some(disk), Some(top), Some(bottom)) => Some((disk, profile(&disk, y, top, bottom))),
+        let outer_bottom = outer_chords.line(y + 1);
+        let inner_bottom = inner_chords.as_mut().map(|chords| chords.line(y + 1));
+        let outer_lines = (&outer, &outer_top, &outer_bottom);
+        let inner_lines = match (&inner, &inner_top, &inner_bottom) {
+            (Some(disk), Some(top), Some(bottom)) => Some((disk, top, bottom)),
             _ => None,
         };
-        row(outer, outer_profile, inner_profile, y, clip_x, emit);
+        if !mirrored_row(outer_lines, inner_lines, y, clip_x, emit) {
+            let outer_profile = profile(&outer, y, &outer_top.inside, &outer_bottom.inside);
+            let inner_profile = inner_lines
+                .map(|(disk, top, bottom)| (*disk, profile(disk, y, &top.inside, &bottom.inside)));
+            row(outer, outer_profile, inner_profile, y, clip_x, emit);
+        }
         outer_top = outer_bottom;
         inner_top = inner_bottom;
+    }
+}
+
+/// A disk with its top and bottom lattice lines in one row.
+type Lines<'a> = (&'a Disk, &'a Line, &'a Line);
+
+/// The edge cells on the left of a row, `first..=last`: between the top and bottom lines'
+/// left ends. `None` for rows the mirrored path doesn't handle: a line without inside
+/// points (a cap), the row with the widest point (its edge can bulge past the lattice
+/// points), or a run that would meet its mirror.
+fn left_run((disk, top, bottom): Lines, row: i16) -> Option<(i32, i32)> {
+    if top.inside.is_empty() || bottom.inside.is_empty() || disk.center_in_row(row) {
+        return None;
+    }
+    let (first, last) = (top.left.min(bottom.left) - 1, top.left.max(bottom.left) - 1);
+    // The mirror of cell `x` is `center_x − x − 1`.
+    (last < disk.center_x - last - 1).then_some((first, last))
+}
+
+/// Rasterizes a row by walking only its left edge cells and emitting each with its mirror.
+/// Returns `false`, having emitted nothing, for rows it doesn't handle: then the general
+/// `row` does. For a ring, the outer and inner edges must not share cells.
+fn mirrored_row(
+    outer: Lines,
+    inner: Option<Lines>,
+    y: i16,
+    clip_x: (i16, i16),
+    emit: &mut impl FnMut(Coverage),
+) -> bool {
+    let Some(outer_run) = left_run(outer, y) else {
+        return false;
+    };
+    let inner_run = match inner {
+        Some(lines @ (disk, top, bottom)) => {
+            if top.inside.is_empty() && bottom.inside.is_empty() && !disk.reaches_row(y) {
+                None
+            } else {
+                match left_run(lines, y) {
+                    Some(run) if outer_run.1 < run.0 => Some((lines, run)),
+                    _ => return false,
+                }
+            }
+        }
+        None => None,
+    };
+    let center_x = outer.0.center_x;
+    edge_cells(outer, outer_run, y, clip_x, |area| area, emit);
+    match inner_run {
+        None => span(outer_run.1 + 1, center_x - outer_run.1 - 1, y, clip_x, emit),
+        Some((lines, run)) => {
+            // Between the outer and inner edges, on both sides.
+            span(outer_run.1 + 1, run.0, y, clip_x, emit);
+            span(
+                center_x - run.0,
+                center_x - outer_run.1 - 1,
+                y,
+                clip_x,
+                emit,
+            );
+            edge_cells(lines, run, y, clip_x, |area| FULL - area, emit);
+        }
+    }
+    true
+}
+
+/// Emits the edge cells `first..=last` and their mirrors, with `coverage(area)` of each
+/// cell's inside area. Corner signs come from the lines' left ends; the corner values
+/// step right along the top line by additions, and each crossing is computed once.
+fn edge_cells(
+    (disk, top, bottom): Lines,
+    (first, last): (i32, i32),
+    y: i16,
+    clip_x: (i16, i16),
+    coverage: impl Fn(i32) -> i32,
+    emit: &mut impl FnMut(Coverage),
+) {
+    let mirror = |x: i32| disk.center_x - x - 1;
+    let (clip_start, clip_end) = (i32::from(clip_x.0), i32::from(clip_x.1));
+    let visible = |first: i32, last: i32| first < clip_end && last >= clip_start;
+    if !visible(first, last) && !visible(mirror(last), mirror(first)) {
+        return;
+    }
+    // The implicit function one line down is this much larger, at every column.
+    let down = 4 * top.offset_y + 4;
+    // On a vertical edge, where it crosses zero as a distance from its top corner.
+    let vertical = |top_value: i32| round_div(top_value * SIDE, -down);
+    let crossed = |column: i32| (column >= top.left) != (column >= bottom.left);
+    // The top line at column `first`, `steps` columns from its left end.
+    let steps = first - top.left;
+    let mut offset_x = top.offset_x + 2 * steps;
+    let mut value = top.value + 4 * steps * (top.offset_x + steps);
+    let mut left_crossing = if crossed(first) { vertical(value) } else { 0 };
+    for x in first..=last {
+        value += 4 * offset_x + 4;
+        offset_x += 2;
+        let right_crossing = if crossed(x + 1) { vertical(value) } else { 0 };
+        let inside = [
+            x >= top.left,
+            x + 1 >= top.left,
+            x + 1 >= bottom.left,
+            x >= bottom.left,
+        ];
+        // Each from its edge's first corner, going around the cell.
+        let crossings = [
+            top.crossing,
+            right_crossing,
+            SIDE - bottom.crossing,
+            SIDE - left_crossing,
+        ];
+        let area = coverage(cell_area(inside, |edge| crossings[edge]));
+        for x in [x, mirror(x)] {
+            if clip_start <= x && x < clip_end {
+                emit_cell(x as i16, y, area, emit);
+            }
+        }
+        left_crossing = right_crossing;
+    }
+}
+
+/// Emits the full cells `first..end`, clipped.
+fn span(first: i32, end: i32, y: i16, clip_x: (i16, i16), emit: &mut impl FnMut(Coverage)) {
+    let first = first.max(clip_x.0.into());
+    let end = end.min(clip_x.1.into());
+    if first < end {
+        emit(Coverage::Interior(cell_box(first as i16, end as i16, y)));
     }
 }
 
@@ -379,18 +535,13 @@ impl Cells {
     }
 }
 
+/// The cell's side in fixed-point units for crossings and areas.
+const SIDE: i32 = 256;
+
 /// Area, in 1/65536 of the cell, where the implicit function is ≤ 0, taking it as linear
 /// along each edge. `corner_values` are the function at the corners top-left, top-right,
 /// bottom-right, bottom-left.
-///
-/// The corners inside pick the shape: a triangle at one corner, the cell minus such a
-/// triangle, a trapezoid, or the cell minus two opposite triangles. Each area is computed
-/// doubled, from the crossings, so it stays an integer: the same value as the shoelace
-/// formula on the polygon.
 fn polygon_area(corner_values: [i32; 4]) -> i32 {
-    /// The cell's side in fixed-point units.
-    const SIDE: i32 = 256;
-    const DOUBLED_CELL: i32 = 2 * SIDE * SIDE;
     // Where edge `corner` → `corner + 1` crosses zero, as a distance from `corner`.
     let crossing = |corner: usize| {
         let next = (corner + 1) % 4;
@@ -399,6 +550,21 @@ fn polygon_area(corner_values: [i32; 4]) -> i32 {
             corner_values[corner] - corner_values[next],
         )
     };
+    cell_area(corner_values.map(|value| value <= 0), crossing)
+}
+
+/// Area, in 1/65536 of the cell, of the part inside. `inside` says which corners are
+/// inside (top-left, top-right, bottom-right, bottom-left), and `crossing(corner)` where
+/// edge `corner` → `corner + 1` crosses zero, as a distance from `corner` in 1/SIDE. It is
+/// only called for edges with one corner inside.
+///
+/// The corners inside pick the shape: a triangle at one corner, the cell minus such a
+/// triangle, a trapezoid, or the cell minus two opposite triangles. Each area is computed
+/// doubled, from the crossings, so it stays an integer: the same value as the shoelace
+/// formula on the polygon.
+#[inline(always)]
+fn cell_area(inside: [bool; 4], crossing: impl Fn(usize) -> i32) -> i32 {
+    const DOUBLED_CELL: i32 = 2 * SIDE * SIDE;
     // Doubled area of the triangle cut off at `corner`: its legs run along the corner's
     // two edges, out to the crossings.
     let corner_triangle = |corner: usize| {
@@ -410,7 +576,6 @@ fn polygon_area(corner_values: [i32; 4]) -> i32 {
         let (next, previous) = ((corner + 1) % 4, (corner + 3) % 4);
         SIDE * (crossing(next) + SIDE - crossing(previous))
     };
-    let inside = corner_values.map(|value| value <= 0);
     let doubled_area = match inside {
         [false, false, false, false] => 0,
         [true, true, true, true] => DOUBLED_CELL,
