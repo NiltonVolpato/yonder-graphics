@@ -382,47 +382,63 @@ impl Cells {
 /// Area, in 1/65536 of the cell, where the implicit function is ≤ 0, taking it as linear
 /// along each edge. `corner_values` are the function at the corners top-left, top-right,
 /// bottom-right, bottom-left.
+///
+/// The corners inside pick the shape: a triangle at one corner, the cell minus such a
+/// triangle, a trapezoid, or the cell minus two opposite triangles. Each area is computed
+/// doubled, from the crossings, so it stays an integer: the same value as the shoelace
+/// formula on the polygon.
 fn polygon_area(corner_values: [i32; 4]) -> i32 {
     /// The cell's side in fixed-point units.
     const SIDE: i32 = 256;
-    const CORNERS: [(i32, i32); 4] = [(0, 0), (SIDE, 0), (SIDE, SIDE), (0, SIDE)];
-    let inside = |corner: usize| corner_values[corner] <= 0;
-    let mut vertices = [(0, 0); 8];
-    let mut count = 0;
-    for corner in 0..4 {
+    const DOUBLED_CELL: i32 = 2 * SIDE * SIDE;
+    // Where edge `corner` → `corner + 1` crosses zero, as a distance from `corner`.
+    let crossing = |corner: usize| {
         let next = (corner + 1) % 4;
-        if inside(corner) {
-            vertices[count] = CORNERS[corner];
-            count += 1;
-        }
-        if inside(corner) != inside(next) {
-            // Where the edge crosses zero, as a fraction of SIDE from `corner`.
-            let crossing = round_div(
-                corner_values[corner] * SIDE,
-                corner_values[corner] - corner_values[next],
-            );
-            let ((x0, y0), (x1, y1)) = (CORNERS[corner], CORNERS[next]);
-            vertices[count] = (
-                x0 + (x1 - x0) * crossing / SIDE,
-                y0 + (y1 - y0) * crossing / SIDE,
-            );
-            count += 1;
-        }
-    }
-    // Shoelace formula.
-    let doubled_area: i32 = (0..count)
-        .map(|k| {
-            let ((x0, y0), (x1, y1)) = (vertices[k], vertices[(k + 1) % count]);
-            x0 * y1 - x1 * y0
-        })
-        .sum();
-    doubled_area.abs() / 2
+        round_div(
+            corner_values[corner] * SIDE,
+            corner_values[corner] - corner_values[next],
+        )
+    };
+    // Doubled area of the triangle cut off at `corner`: its legs run along the corner's
+    // two edges, out to the crossings.
+    let corner_triangle = |corner: usize| {
+        let previous = (corner + 3) % 4;
+        crossing(corner) * (SIDE - crossing(previous))
+    };
+    // Doubled area of the trapezoid where `corner` and the next corner are inside.
+    let trapezoid = |corner: usize| {
+        let (next, previous) = ((corner + 1) % 4, (corner + 3) % 4);
+        SIDE * (crossing(next) + SIDE - crossing(previous))
+    };
+    let inside = corner_values.map(|value| value <= 0);
+    let doubled_area = match inside {
+        [false, false, false, false] => 0,
+        [true, true, true, true] => DOUBLED_CELL,
+        [true, false, false, false] => corner_triangle(0),
+        [false, true, false, false] => corner_triangle(1),
+        [false, false, true, false] => corner_triangle(2),
+        [false, false, false, true] => corner_triangle(3),
+        [false, true, true, true] => DOUBLED_CELL - corner_triangle(0),
+        [true, false, true, true] => DOUBLED_CELL - corner_triangle(1),
+        [true, true, false, true] => DOUBLED_CELL - corner_triangle(2),
+        [true, true, true, false] => DOUBLED_CELL - corner_triangle(3),
+        [true, true, false, false] => trapezoid(0),
+        [false, true, true, false] => trapezoid(1),
+        [false, false, true, true] => trapezoid(2),
+        [true, false, false, true] => trapezoid(3),
+        // Opposite corners inside: the inside joins them across the cell.
+        [true, false, true, false] => DOUBLED_CELL - corner_triangle(1) - corner_triangle(3),
+        [false, true, false, true] => DOUBLED_CELL - corner_triangle(0) - corner_triangle(2),
+    };
+    doubled_area / 2
 }
 
 /// `a / b` rounded to nearest, ties to even, so mirrored edges round the same way.
+/// `a / b` is between 0 and 256: `a` and `b` have the same sign.
 fn round_div(a: i32, b: i32) -> i32 {
     let (a, b) = if b < 0 { (-a, -b) } else { (a, b) };
-    let (quotient, remainder) = (a.div_euclid(b), a.rem_euclid(b));
+    let quotient = a / b;
+    let remainder = a - quotient * b;
     if 2 * remainder > b || (2 * remainder == b && quotient % 2 != 0) {
         quotient + 1
     } else {
