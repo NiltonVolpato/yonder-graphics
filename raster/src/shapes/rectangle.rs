@@ -26,8 +26,11 @@ impl Rasterizable for Stroked<'_, Rectangle> {
                 if quarters == 0 {
                     return None;
                 }
-                let area = BoundingBox::new(Point::new(px(x0), px(y0)), Point::new(px(x1), px(y1)))
-                    .intersection(&clip)?;
+                let area = BoundingBox::new(
+                    Point::new(saturating_i16(x0), saturating_i16(y0)),
+                    Point::new(saturating_i16(x1), saturating_i16(y1)),
+                )
+                .intersection(&clip)?;
                 let coverage = ((quarters * 255 + 2) / 4) as u8;
                 Some(match quarters {
                     4 => Coverage::Interior(area),
@@ -68,6 +71,6 @@ fn axis(lo: i16, hi: i16, width: i32) -> impl Iterator<Item = (i32, i32, i32, i3
         })
 }
 
-fn px(v: i32) -> i16 {
-    v.clamp(i16::MIN.into(), i16::MAX.into()) as i16
+fn saturating_i16(value: i32) -> i16 {
+    value.clamp(i16::MIN.into(), i16::MAX.into()) as i16
 }

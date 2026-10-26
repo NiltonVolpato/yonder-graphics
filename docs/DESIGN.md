@@ -53,7 +53,7 @@ api/        → geometry, raster
 - `Circle` has a homogeneous center (`PointT2`), so it can sit on a lattice point (`[x, y, 1]`) or a pixel center (`[2x + 1, 2y + 1, 2]`, `PointT2::pixel_center`). A circle on a pixel center with an even diameter ends in the middle of pixels.
 - `Circle::in_box(bounds)` is the circle inscribed in a box. A non-square box uses the shorter side, centered. Its center may or may not fall on a pixel center.
 - Internally a circle is `[x, y, w, r]`: center `(x / w, y / w)`, radius `r / w`, `w > 0` (the hither side). Strokes double the coordinates so half-pixel radii stay integers.
-- Rasterization is marching squares on the implicit function `q`, evaluated at pixel corners. Coverage is the area of the polygon cut by the zero crossings on the four edges, with `q` taken as linear along each edge.
+- Rasterization is marching squares on the circle's implicit function (`Disk::implicit_value`: negative inside, zero on the circle), evaluated at pixel corners. Coverage is the area of the polygon cut by the zero crossings on the four edges, with the function taken as linear along each edge.
   - The lattice points inside on each line are walked incrementally from the previous line. One `isqrt` starts the walk at the clip's first row.
   - Only cells near the edge are visited, and interiors are one span per row.
   - A row still needs checking when none of its lattice points are inside: caps and tiny circles. Those cells, and the one extra cell the widest row can bulge into, are refined into 2×2 half-pixel cells.
