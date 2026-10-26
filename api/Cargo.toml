@@ -1,0 +1,8 @@
+[package]
+name = "yonder-graphics"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+yonder-geometry.workspace = true
+yonder-raster.workspace = true

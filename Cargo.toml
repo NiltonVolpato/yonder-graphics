@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["api", "geometry", "raster"]
+
+[workspace.dependencies]
+yonder-geometry = { path = "geometry" }
+yonder-raster = { path = "raster" }
+yonder-graphics = { path = "api" }

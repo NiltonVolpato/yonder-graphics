@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+show_help() {
+    cat << 'EOF'
+Usage: mute [OPTIONS] COMMAND [ARGS...]
+
+Runs a command silently. If the command succeeds, its output is hidden.
+If the command fails, the output is printed to the terminal.
+
+Outputs under 8KB are held entirely in memory. Outputs larger than 8KB
+are safely streamed to a temporary file to preserve system resources.
+
+Options:
+  -h, --help    Show this help message and exit
+
+Environment Variables:
+  BLOCK_SIZE    Override the default memory buffer size (default: 8192 bytes)
+
+Examples:
+  mute ls /valid/path       # Silent on success
+  mute ls /fake/path        # Prints error on failure
+  BLOCK_SIZE=1024 mute run  # Set memory buffer threshold to 1KB
+EOF
+}
+
+if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
+# klaatu barada nikto
+shopt -s lastpipe
+set +m
+
+BLOCK_SIZE=${BLOCK_SIZE:-$(( 8 << 10 ))} # 8KB
+
+"$@" 2>&1 | {
+    read -r -N "$BLOCK_SIZE" && {
+        declare -g tempfile=$(mktemp)
+        trap 'rm -f "$tempfile"' EXIT
+        echo -n "$REPLY" >"$tempfile"
+        unset REPLY
+        cat >>"$tempfile"
+    }
+}
+exit_code="${PIPESTATUS[0]}"
+
+if [[ $exit_code -ne 0 ]]; then
+    if [[ -n "$tempfile" ]]; then
+        cat "$tempfile"
+    else
+        echo -n "$REPLY"
+    fi
+fi
+
+exit $exit_code
