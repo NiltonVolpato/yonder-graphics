@@ -50,11 +50,13 @@ api/        → geometry, raster
 
 ## Circles
 
-- `Circle` has a homogeneous center (`PointT2`), so it can sit on a lattice point (`[x, y, 1]`) or a pixel center (`[2x + 1, 2y + 1, 2]`, `PointT2::pixel_center`). A circle on a pixel center with an even diameter ends in the middle of pixels.
+- `Circle` has a homogeneous center (`PointT2`), restricted to a lattice point (`[x, y, 1]`) or a pixel center (`[2x + 1, 2y + 1, 2]`, `PointT2::pixel_center`). Rasterization relies on the center being on the half-pixel grid (horizontal symmetry). A circle on a pixel center with an even diameter ends in the middle of pixels.
+- Users make circles with `Circle::in_box` or `Circle::at_pixel_center(pixel, radius)`. The general `Circle::new(center, radius)` is `#[doc(hidden)]` and debug-asserts the restriction.
 - `Circle::in_box(bounds)` is the circle inscribed in a box. A non-square box uses the shorter side, centered. Its center may or may not fall on a pixel center.
-- Internally a circle is `[x, y, w, r]`: center `(x / w, y / w)`, radius `r / w`, `w > 0` (the hither side). Strokes double the coordinates so half-pixel radii stay integers.
+- Internally a circle is `[x, y, w, r]`: center `(x / w, y / w)`, radius `r / w`, `w` 1 or 2. The rasterizer converts it to half pixels, where centers and stroke radii are all integers.
 - Rasterization is marching squares on the circle's implicit function (`Disk::implicit_value`: negative inside, zero on the circle), evaluated at pixel corners. Coverage is the area of the polygon cut by the zero crossings on the four edges, with the function taken as linear along each edge.
-  - The lattice points inside on each line are walked incrementally from the previous line. One `isqrt` starts the walk at the clip's first row.
+  - The lattice points inside on each line are walked incrementally from the previous line, like Zingl's circle algorithm: the implicit function at the chord's left end is updated with shifts and additions. One `isqrt` starts the walk at the clip's first row. The right end is the left end mirrored around the center.
+  - Corner values along a row of edge cells are updated the same way. Positions are `i16`, the implicit function is `i32` (it is only evaluated near the edge), and `i64` is only used for the starting values.
   - Only cells near the edge are visited, and interiors are one span per row.
   - A row still needs checking when none of its lattice points are inside: caps and tiny circles. Those cells, and the one extra cell the widest row can bulge into, are refined into 2×2 half-pixel cells.
 - The linear crossings sit slightly inside the convex edge. A filled circle comes out about 1 px² short in total, whatever its radius, which is like a radius 1/(2πr) smaller. In rings the inner and outer losses cancel.

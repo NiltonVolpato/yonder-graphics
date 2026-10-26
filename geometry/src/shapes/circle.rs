@@ -13,14 +13,25 @@ pub struct Circle {
 }
 
 impl Circle {
-    /// A circle of `radius` pixels. `center` must be on the hither side (`w > 0`).
+    /// A circle of `radius` pixels. `center` must be a lattice point (`w = 1`) or a pixel
+    /// center (`w = 2`): rasterization relies on the center being on the half-pixel grid.
+    /// Use `in_box` or `at_pixel_center` instead.
+    #[doc(hidden)]
     pub const fn new(center: PointT2, radius: i16) -> Self {
         let (_, _, w) = center.coords();
-        debug_assert!(w > 0, "circle center must have w > 0");
+        debug_assert!(
+            w == 1 || w == 2,
+            "circle center must be on the half-pixel grid"
+        );
         Self {
             center,
             radius: radius as i32 * w,
         }
+    }
+
+    /// A circle of `radius` pixels around the center of `pixel`.
+    pub const fn at_pixel_center(pixel: Point, radius: i16) -> Self {
+        Self::new(PointT2::pixel_center(pixel), radius)
     }
 
     /// The circle inscribed in `bounds`. If `bounds` isn't square, the circle uses the

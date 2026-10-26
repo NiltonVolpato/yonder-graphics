@@ -3,7 +3,13 @@
 //! function as linear along each edge. Only cells near the edge are visited.
 //!
 //! A cell is the square between four lattice points (pixel corners). Cell `(x, y)` is
-//! pixel `(x, y)`.
+//! pixel `(x, y)`. A lattice line is the horizontal line of corners between two rows.
+//!
+//! Distances are in half pixels, so that circle centers (lattice points or pixel centers)
+//! and stroke radii are all integers. Positions are `i16` screen coordinates. The
+//! implicit function is `i32`: it is only evaluated near the edge, where it stays small.
+
+use core::ops::RangeInclusive;
 
 use yonder_geometry::screen::{BoundingBox, Point};
 use yonder_geometry::shapes::Circle;
@@ -18,7 +24,7 @@ impl Rasterizable for Filled<'_, Circle> {
 
 impl Rasterizable for Stroked<'_, Circle> {
     fn rasterize(&self, clip: BoundingBox) -> impl Iterator<Item = Coverage> {
-        let width = i64::from(self.width);
+        let width = i32::from(self.width);
         let inner = Disk::grown(self.shape, -width);
         rasterize(
             Disk::grown(self.shape, width),
@@ -28,120 +34,137 @@ impl Rasterizable for Stroked<'_, Circle> {
     }
 }
 
-/// A disk with center `(x / w, y / w)` and radius `radius / w`, `w > 0`.
-///
-/// `x`, `y`, `w` are the usual names for homogeneous coordinates; `w` is the common
-/// denominator that keeps half-pixel centers and radii integral.
+/// A disk in half pixels: center `(center_x / 2, center_y / 2)`, radius `radius / 2`.
 #[derive(Clone, Copy)]
 struct Disk {
-    x: i64,
-    y: i64,
-    w: i64,
-    radius: i64,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
 }
 
 impl Disk {
     /// The circle grown by `stroke_width / 2` pixels, or shrunk when it is negative.
-    /// Coordinates are doubled when needed so half-pixel radii stay integers.
-    fn grown(circle: &Circle, stroke_width: i64) -> Self {
-        let [x, y, w, radius] = circle.homogeneous().map(i64::from);
-        if stroke_width == 0 {
-            Self { x, y, w, radius }
-        } else {
-            Self {
-                x: 2 * x,
-                y: 2 * y,
-                w: 2 * w,
-                radius: 2 * radius + stroke_width * w,
-            }
+    fn grown(circle: &Circle, stroke_width: i32) -> Self {
+        // `w` is 1 for a lattice-point center and 2 for a pixel center (see `Circle::new`).
+        let [x, y, w, radius] = circle.homogeneous();
+        let to_half_pixels = 2 / w;
+        Self {
+            center_x: x * to_half_pixels,
+            center_y: y * to_half_pixels,
+            radius: radius * to_half_pixels + stroke_width,
         }
     }
 
-    /// The circle's implicit function at the homogeneous point `(point_x / point_w,
-    /// point_y / point_w)`: negative inside, zero on the circle, positive outside.
+    /// The circle's implicit function at `(x / 2, y / 2)`: negative inside, zero on the
+    /// circle, positive outside. It is `distance² − radius²`, in half pixels squared.
     ///
-    /// It is `distance² − radius²` (the power of the point), scaled by `(w · point_w)²` so
-    /// it stays an integer.
-    fn implicit_value(&self, point_x: i64, point_y: i64, point_w: i64) -> i64 {
-        let dx = self.w * point_x - self.x * point_w;
-        let dy = self.w * point_y - self.y * point_w;
-        dx * dx + dy * dy - self.radius * self.radius * point_w * point_w
+    /// Only called near the edge, where the result fits `i32`; the squares need `i64`.
+    fn implicit_value(&self, x: i32, y: i32) -> i32 {
+        let dx = i64::from(x - self.center_x);
+        let dy = i64::from(y - self.center_y);
+        let radius = i64::from(self.radius);
+        let value = dx * dx + dy * dy - radius * radius;
+        debug_assert!(
+            i32::try_from(value).is_ok(),
+            "implicit value far from the edge"
+        );
+        value as i32
     }
 
     /// Rows the disk reaches into, half-open.
-    fn rows(&self) -> (i64, i64) {
+    fn rows(&self) -> (i32, i32) {
         (
-            (self.y - self.radius).div_euclid(self.w),
-            ceil_div(self.y + self.radius, self.w),
+            (self.center_y - self.radius).div_euclid(2),
+            ceil_div(self.center_y + self.radius, 2),
         )
     }
 
-    fn reaches_row(&self, row: i64) -> bool {
-        self.y - self.radius < self.w * (row + 1) && self.y + self.radius > self.w * row
+    fn reaches_row(&self, row: i16) -> bool {
+        let top = 2 * i32::from(row);
+        self.center_y - self.radius < top + 2 && self.center_y + self.radius > top
     }
 
-    fn center_in_row(&self, row: i64) -> bool {
-        self.w * row < self.y && self.y < self.w * (row + 1)
+    fn center_in_row(&self, row: i16) -> bool {
+        let top = 2 * i32::from(row);
+        top < self.center_y && self.center_y < top + 2
     }
 }
 
-/// Tracks the lattice points inside the disk on consecutive horizontal lattice lines.
-/// Each line starts from the previous one, so the walk costs O(radius) in total.
+/// Tracks the lattice points inside the disk on consecutive lattice lines, top to bottom.
+///
+/// Like Zingl's circle algorithm, it keeps the implicit function at the chord's left end
+/// and updates it with additions as the end moves: one step changes `offset²` by
+/// `4 · offset + 4` (offsets are in half pixels, so a step is 2). The one square root
+/// finds the first line's end. The right end is the left one mirrored around the center.
 struct Chords {
     disk: Disk,
-    left: i64,
-    right: i64,
+    line: i16,
+    /// The chord belongs to the circle, which may reach past the `i16` screen range.
+    left: i32,
+    /// `2 · left − center_x` and `2 · line − center_y`.
+    offset_x: i32,
+    offset_y: i32,
+    /// The implicit function at `(left, line)`.
+    value: i32,
 }
 
 impl Chords {
-    /// Starts on `line` with the one square root per shape.
-    fn new(disk: Disk, line: i64) -> Self {
-        let offset_y = disk.w * line - disk.y;
-        let half_chord = (disk.radius * disk.radius - offset_y * offset_y)
-            .max(0)
-            .unsigned_abs()
-            .isqrt() as i64;
+    fn new(disk: Disk, line: i16) -> Self {
+        let offset_y = 2 * i32::from(line) - disk.center_y;
+        let radius = i64::from(disk.radius);
+        let half_chord_squared = radius * radius - i64::from(offset_y) * i64::from(offset_y);
+        let half_chord = half_chord_squared.max(0).unsigned_abs().isqrt() as i32;
+        let left = ceil_div(disk.center_x - half_chord, 2);
         Self {
             disk,
-            left: ceil_div(disk.x - half_chord, disk.w),
-            right: (disk.x + half_chord).div_euclid(disk.w),
+            line,
+            left,
+            offset_x: 2 * left - disk.center_x,
+            offset_y,
+            value: disk.implicit_value(2 * left, 2 * i32::from(line)),
         }
     }
 
-    /// The inside points `left..=right` on `line`, empty when `left > right`. Lines go
-    /// in order.
-    fn inside_on(&mut self, line: i64) -> (i64, i64) {
-        let Disk { x, w, .. } = self.disk;
-        let offset_y = w * line - self.disk.y;
-        let half_chord_squared = self.disk.radius * self.disk.radius - offset_y * offset_y;
-        if half_chord_squared < 0 {
-            return (1, 0);
+    /// The lattice points inside the disk on `line`: the current line or the next one.
+    fn inside_on(&mut self, line: i16) -> RangeInclusive<i16> {
+        debug_assert!(line == self.line || line == self.line + 1);
+        if line != self.line {
+            self.value += 4 * self.offset_y + 4;
+            self.offset_y += 2;
+            self.line = line;
         }
-        let inside = |point_x: i64| (w * point_x - x) * (w * point_x - x) <= half_chord_squared;
-        // Both predicates flip once along the line, so each walk only moves toward the edge.
-        let past_left = |point_x: i64| w * point_x >= x || inside(point_x);
-        let before_right = |point_x: i64| w * point_x <= x || inside(point_x);
-        while !past_left(self.left) {
+        // False for outside points left of the center, true from the chord's left end on.
+        // It flips once along the line, so the left end only moves toward the flip.
+        let past_left = |offset_x: i32, value: i32| offset_x >= 0 || value <= 0;
+        while !past_left(self.offset_x, self.value) {
+            self.value += 4 * self.offset_x + 4;
+            self.offset_x += 2;
             self.left += 1;
         }
-        while past_left(self.left - 1) {
+        loop {
+            let value = self.value - 4 * self.offset_x + 4;
+            if !past_left(self.offset_x - 2, value) {
+                break;
+            }
+            self.value = value;
+            self.offset_x -= 2;
             self.left -= 1;
         }
-        while !before_right(self.right) {
-            self.right -= 1;
+        if self.value <= 0 {
+            let right = self.disk.center_x - self.left;
+            screen(self.left)..=screen(right)
+        } else {
+            // No lattice point inside: an empty range.
+            RangeInclusive::new(1, 0)
         }
-        while before_right(self.right + 1) {
-            self.right += 1;
-        }
-        (self.left, self.right)
     }
 }
 
 /// Cells of one row as half-open x ranges: `touched` may be covered, `full` is.
 #[derive(Clone, Copy)]
 struct Profile {
-    touched: (i64, i64),
-    full: (i64, i64),
+    touched: (i16, i16),
+    full: (i16, i16),
 }
 
 const EMPTY: Profile = Profile {
@@ -150,38 +173,47 @@ const EMPTY: Profile = Profile {
 };
 
 /// The cells of `row`, from the inside points on its top and bottom lattice lines.
-fn profile(disk: &Disk, row: i64, top: (i64, i64), bottom: (i64, i64)) -> Profile {
-    let has_points = |points: (i64, i64)| points.0 <= points.1;
-    let (left, right) = match (has_points(top), has_points(bottom)) {
-        (true, true) => (top.0.min(bottom.0), top.1.max(bottom.1)),
-        (true, false) => top,
-        (false, true) => bottom,
-        (false, false) if disk.reaches_row(row) => {
+fn profile(
+    disk: &Disk,
+    row: i16,
+    top: &RangeInclusive<i16>,
+    bottom: &RangeInclusive<i16>,
+) -> Profile {
+    let (left, right) = match (top.is_empty(), bottom.is_empty()) {
+        (false, false) => (
+            *top.start().min(bottom.start()),
+            *top.end().max(bottom.end()),
+        ),
+        (false, true) => (*top.start(), *top.end()),
+        (true, false) => (*bottom.start(), *bottom.end()),
+        (true, true) if disk.reaches_row(row) => {
             // A cap, or a disk smaller than a pixel: narrower than one pixel, so it's in the
             // one or two cells around the center column.
-            let (doubled_x, doubled_w) = (2 * disk.x, 2 * disk.w);
             let touched = (
-                (doubled_x - disk.w).div_euclid(doubled_w),
-                (doubled_x + disk.w).div_euclid(doubled_w) + 1,
+                (disk.center_x - 1).div_euclid(2) as i16,
+                ((disk.center_x + 1).div_euclid(2) + 1) as i16,
             );
             return Profile {
                 touched,
                 full: (0, 0),
             };
         }
-        (false, false) => return EMPTY,
+        (true, true) => return EMPTY,
     };
-    let full = (top.0.max(bottom.0), top.1.min(bottom.1));
-    let full = if has_points(top) && has_points(bottom) && full.0 < full.1 {
-        full
-    } else {
+    let full = if top.is_empty() || bottom.is_empty() {
         (0, 0)
+    } else {
+        let full = (
+            *top.start().max(bottom.start()),
+            *top.end().min(bottom.end()),
+        );
+        if full.0 < full.1 { full } else { (0, 0) }
     };
     // A cell with any inside corner is touched. In the row with the widest point, the
     // edge can also bulge into one more cell on each side.
     let margin = if disk.center_in_row(row) { 2 } else { 1 };
     Profile {
-        touched: (left - margin, right + margin),
+        touched: (left.saturating_sub(margin), right.saturating_add(margin)),
         full,
     }
 }
@@ -192,29 +224,38 @@ fn rasterize(
     clip: BoundingBox,
 ) -> impl Iterator<Item = Coverage> {
     let (first, end) = outer.rows();
-    let rows = first.max(clip.top_left.y.into())..end.min(clip.bottom_right.y.into());
-    let clip_x = (i64::from(clip.top_left.x), i64::from(clip.bottom_right.x));
-    let mut chords = (
-        Chords::new(outer, rows.start),
-        inner.map(|disk| Chords::new(disk, rows.start)),
-    );
-    let mut top = (
-        chords.0.inside_on(rows.start),
-        chords.1.as_mut().map(|inner| inner.inside_on(rows.start)),
-    );
-    rows.flat_map(move |y| {
-        let bottom = (
-            chords.0.inside_on(y + 1),
-            chords.1.as_mut().map(|inner| inner.inside_on(y + 1)),
-        );
-        let outer_profile = profile(&outer, y, top.0, bottom.0);
-        let inner_profile = match (inner, top.1, bottom.1) {
-            (Some(disk), Some(top), Some(bottom)) => Some((disk, profile(&disk, y, top, bottom))),
-            _ => None,
-        };
-        top = bottom;
-        row(outer, outer_profile, inner_profile, y, clip_x)
-    })
+    let first = first.max(clip.top_left.y.into()) as i16;
+    let end = end.min(clip.bottom_right.y.into()).max(first.into()) as i16;
+    let clip_x = (clip.top_left.x, clip.bottom_right.x);
+    // Only start the walk when a row is visible: it must begin near the disk.
+    (first < end)
+        .then(move || {
+            let mut chords = (
+                Chords::new(outer, first),
+                inner.map(|disk| Chords::new(disk, first)),
+            );
+            let mut top = (
+                chords.0.inside_on(first),
+                chords.1.as_mut().map(|inner| inner.inside_on(first)),
+            );
+            (first..end).flat_map(move |y| {
+                let bottom = (
+                    chords.0.inside_on(y + 1),
+                    chords.1.as_mut().map(|inner| inner.inside_on(y + 1)),
+                );
+                let outer_profile = profile(&outer, y, &top.0, &bottom.0);
+                let inner_profile = match (inner, &top.1, &bottom.1) {
+                    (Some(disk), Some(top), Some(bottom)) => {
+                        Some((disk, profile(&disk, y, top, bottom)))
+                    }
+                    _ => None,
+                };
+                top = bottom;
+                row(outer, outer_profile, inner_profile, y, clip_x)
+            })
+        })
+        .into_iter()
+        .flatten()
 }
 
 /// Splits a row at every range boundary. Within a segment, every cell is in the same
@@ -223,8 +264,8 @@ fn row(
     outer: Disk,
     outer_profile: Profile,
     inner: Option<(Disk, Profile)>,
-    y: i64,
-    clip_x: (i64, i64),
+    y: i16,
+    clip_x: (i16, i16),
 ) -> impl Iterator<Item = Coverage> {
     let inner_profile = inner.map_or(EMPTY, |(_, profile)| profile);
     let start = outer_profile.touched.0.max(clip_x.0);
@@ -241,7 +282,7 @@ fn row(
     ]
     .map(|cut| cut.clamp(start, end));
     cuts.sort_unstable();
-    let within = |range: (i64, i64), x: i64| range.0 <= x && x < range.1;
+    let within = |range: (i16, i16), x: i16| range.0 <= x && x < range.1;
     (0..7usize)
         .filter(move |&index| cuts[index] < cuts[index + 1])
         .flat_map(move |index| {
@@ -258,13 +299,13 @@ fn row(
                 ))))
             } else {
                 Segment::Cells {
-                    y,
-                    x: segment_start,
                     end: segment_end,
                     outer: (!outer_full).then(|| Cells::new(outer, segment_start, y)),
                     inner: inner
                         .filter(|_| inner_touched)
                         .map(|(disk, _)| Cells::new(disk, segment_start, y)),
+                    x: segment_start,
+                    y,
                 }
             }
         })
@@ -274,9 +315,9 @@ enum Segment {
     Done,
     Span(Option<Coverage>),
     Cells {
-        y: i64,
-        x: i64,
-        end: i64,
+        y: i16,
+        x: i16,
+        end: i16,
         outer: Option<Cells>,
         inner: Option<Cells>,
     },
@@ -301,7 +342,7 @@ impl Iterator for Segment {
                     let inner_area = inner.as_mut().map_or(0, Cells::area);
                     let coverage =
                         (((outer_area - inner_area).max(0) * 255 + FULL / 2) / FULL) as u8;
-                    let position = Point::new(saturating_i16(*x), saturating_i16(*y));
+                    let position = Point::new(*x, *y);
                     *x += 1;
                     match coverage {
                         0 => {}
@@ -316,49 +357,53 @@ impl Iterator for Segment {
 }
 
 /// One pixel's area in 1/65536 pixel.
-const FULL: i64 = 1 << 16;
+const FULL: i32 = 1 << 16;
 
-/// Walks the cells of one row left to right, sharing corners between neighbors.
+/// Walks the cells of one row left to right. Neighbors share corners, and the implicit
+/// function moves to the next corners by additions, as in `Chords`.
 struct Cells {
     disk: Disk,
-    x: i64,
-    y: i64,
+    x: i16,
+    y: i16,
+    /// `2 · x − center_x`.
+    offset_x: i32,
     /// The implicit function at the current cell's top-left and bottom-left corners.
-    left_values: [i64; 2],
+    left_values: [i32; 2],
 }
 
 impl Cells {
-    fn new(disk: Disk, x: i64, y: i64) -> Self {
+    fn new(disk: Disk, x: i16, y: i16) -> Self {
+        let (corner_x, corner_y) = (2 * i32::from(x), 2 * i32::from(y));
         Self {
             disk,
             x,
             y,
+            offset_x: corner_x - disk.center_x,
             left_values: [
-                disk.implicit_value(x, y, 1),
-                disk.implicit_value(x, y + 1, 1),
+                disk.implicit_value(corner_x, corner_y),
+                disk.implicit_value(corner_x, corner_y + 2),
             ],
         }
     }
 
-    fn area(&mut self) -> i64 {
-        let (disk, x, y) = (self.disk, self.x, self.y);
-        let right_values = [
-            disk.implicit_value(x + 1, y, 1),
-            disk.implicit_value(x + 1, y + 1, 1),
-        ];
+    fn area(&mut self) -> i32 {
+        let step = 4 * self.offset_x + 4;
+        let right_values = [self.left_values[0] + step, self.left_values[1] + step];
         let corner_values = [
             self.left_values[0],
             right_values[0],
             right_values[1],
             self.left_values[1],
         ];
+        let (corner_x, corner_y) = (2 * i32::from(self.x), 2 * i32::from(self.y));
         self.left_values = right_values;
+        self.offset_x += 2;
         self.x += 1;
         if corner_values.iter().all(|&value| value > 0) {
             // No corner inside: only a cap or a tiny disk reaches here. Look at the four
             // half-pixel cells instead.
-            let value_at = |i: i64, j: i64| disk.implicit_value(2 * x + i, 2 * y + j, 2);
-            let quarter_area = |i: i64, j: i64| {
+            let value_at = |i: i32, j: i32| self.disk.implicit_value(corner_x + i, corner_y + j);
+            let quarter_area = |i: i32, j: i32| {
                 polygon_area([
                     value_at(i, j),
                     value_at(i + 1, j),
@@ -376,10 +421,10 @@ impl Cells {
 /// Area, in 1/65536 of the cell, where the implicit function is ≤ 0, taking it as linear
 /// along each edge. `corner_values` are the function at the corners top-left, top-right,
 /// bottom-right, bottom-left.
-fn polygon_area(corner_values: [i64; 4]) -> i64 {
+fn polygon_area(corner_values: [i32; 4]) -> i32 {
     /// The cell's side in fixed-point units.
-    const SIDE: i64 = 256;
-    const CORNERS: [(i64, i64); 4] = [(0, 0), (SIDE, 0), (SIDE, SIDE), (0, SIDE)];
+    const SIDE: i32 = 256;
+    const CORNERS: [(i32, i32); 4] = [(0, 0), (SIDE, 0), (SIDE, SIDE), (0, SIDE)];
     let inside = |corner: usize| corner_values[corner] <= 0;
     let mut vertices = [(0, 0); 8];
     let mut count = 0;
@@ -404,7 +449,7 @@ fn polygon_area(corner_values: [i64; 4]) -> i64 {
         }
     }
     // Shoelace formula.
-    let doubled_area: i64 = (0..count)
+    let doubled_area: i32 = (0..count)
         .map(|k| {
             let ((x0, y0), (x1, y1)) = (vertices[k], vertices[(k + 1) % count]);
             x0 * y1 - x1 * y0
@@ -414,7 +459,7 @@ fn polygon_area(corner_values: [i64; 4]) -> i64 {
 }
 
 /// `a / b` rounded to nearest, ties to even, so mirrored edges round the same way.
-fn round_div(a: i64, b: i64) -> i64 {
+fn round_div(a: i32, b: i32) -> i32 {
     let (a, b) = if b < 0 { (-a, -b) } else { (a, b) };
     let (quotient, remainder) = (a.div_euclid(b), a.rem_euclid(b));
     if 2 * remainder > b || (2 * remainder == b && quotient % 2 != 0) {
@@ -424,19 +469,17 @@ fn round_div(a: i64, b: i64) -> i64 {
     }
 }
 
-fn ceil_div(a: i64, b: i64) -> i64 {
+fn ceil_div(a: i32, b: i32) -> i32 {
     -(-a).div_euclid(b)
 }
 
-fn saturating_i16(value: i64) -> i16 {
-    value.clamp(i16::MIN.into(), i16::MAX.into()) as i16
+/// Clamps to the `i16` screen range. Anything clamped is far outside every clip.
+fn screen(x: i32) -> i16 {
+    x.clamp(i16::MIN.into(), i16::MAX.into()) as i16
 }
 
-fn cell_box(x0: i64, x1: i64, y: i64) -> BoundingBox {
-    BoundingBox::new(
-        Point::new(saturating_i16(x0), saturating_i16(y)),
-        Point::new(saturating_i16(x1), saturating_i16(y + 1)),
-    )
+fn cell_box(x0: i16, x1: i16, y: i16) -> BoundingBox {
+    BoundingBox::new(Point::new(x0, y), Point::new(x1, y + 1))
 }
 
 #[cfg(test)]
@@ -519,7 +562,6 @@ mod tests {
             boxed(0, 0, 7),
             boxed(-5, 2, 8),
             boxed(1, 1, 3),
-            (Circle::new(PointT2::new(10, 7, 3), 6), 6.0),
         ]
         .into()
     }
@@ -596,6 +638,36 @@ mod tests {
                 .filter(|&((x, y), _)| (-3..4).contains(&x) && (-2..5).contains(&y))
                 .collect();
             assert_eq!(clipped, expected);
+        }
+    }
+
+    #[test]
+    fn largest_circles_stay_in_range() {
+        // Debug builds check every addition: the walk and the implicit values must fit at
+        // the documented limit of 14-bit coordinates.
+        const LIMIT: i16 = (1 << 14) - 1;
+        let circles = [
+            Circle::new(PointT2::new(0, 0, 1), LIMIT),
+            Circle::at_pixel_center(Point::new(LIMIT - 1, -LIMIT), LIMIT),
+        ];
+        let clips = [
+            BoundingBox::new(Point::new(-LIMIT, -LIMIT), Point::new(LIMIT, -LIMIT + 3)),
+            BoundingBox::new(Point::new(-LIMIT, -2), Point::new(LIMIT, 2)),
+            BoundingBox::new(Point::new(LIMIT - 3, -LIMIT), Point::new(LIMIT, LIMIT)),
+        ];
+        for circle in &circles {
+            for clip in clips {
+                assert!(Filled(circle).rasterize(clip).count() > 0);
+                let ring = Stroked {
+                    shape: circle,
+                    width: 9,
+                };
+                assert!(
+                    ring.rasterize(clip).count() > 0,
+                    "{:?} {clip:?}",
+                    circle.homogeneous()
+                );
+            }
         }
     }
 

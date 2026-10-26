@@ -90,32 +90,36 @@ pub fn circles<S: Surface>(surface: &mut S)
 where
     Rgb888: Into<S::Color>,
 {
+    // A circle on a lattice point: the box around it has an even side.
+    let on_corner = |x: i16, y: i16, r: i16| {
+        Circle::in_box(BoundingBox::new(
+            Point::new(x - r, y - r),
+            Point::new(x + r, y + r),
+        ))
+    };
     let white = Style::new().fill(Paint::solid(Rgb888::WHITE));
     for r in 1..=8i16 {
         let x = 4 + r * (r + 1);
-        Circle::new(PointT2::new(i32::from(x), 12, 1), r)
+        on_corner(x, 12, r).with_style(white).draw(surface);
+        Circle::at_pixel_center(Point::new(x, 34), r)
             .with_style(white)
             .draw(surface);
-        let center = PointT2::pixel_center(Point::new(x, 34));
-        Circle::new(center, r).with_style(white).draw(surface);
         let square = BoundingBox::new(Point::new(x - r, 48), Point::new(x + r + 1, 49 + 2 * r));
         Circle::in_box(square).with_style(white).draw(surface);
     }
     for (i, width) in (1..=4u16).enumerate() {
-        let x = 20 + 40 * i as i32;
+        let x = 20 + 40 * i as i16;
         let ring = Style::new().stroke(Stroke::new(width, Paint::solid(Rgb888::new(90, 200, 250))));
-        Circle::new(PointT2::new(x, 92, 1), 14)
-            .with_style(ring)
-            .draw(surface);
+        on_corner(x, 92, 14).with_style(ring).draw(surface);
     }
     let translucent = |c: Rgb888| Style::new().fill(Paint::solid(c).alpha(150));
-    Circle::new(PointT2::new(200, 92, 1), 18)
+    on_corner(200, 92, 18)
         .with_style(translucent(Rgb888::RED))
         .draw(surface);
-    Circle::new(PointT2::new(216, 92, 1), 18)
+    on_corner(216, 92, 18)
         .with_style(translucent(Rgb888::GREEN))
         .draw(surface);
-    Circle::new(PointT2::new(208, 106, 1), 18)
+    on_corner(208, 106, 18)
         .with_style(translucent(Rgb888::BLUE))
         .draw(surface);
 }
