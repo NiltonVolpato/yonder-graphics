@@ -17,6 +17,10 @@ name    = "hello_test"
 harness = false
 name    = "circles"
 
+[[test]]
+harness = false
+name    = "profile"
+
 [lib]
 test = false
 
@@ -40,6 +44,7 @@ panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
 rtt-target       = { version = "0.6.2", features = ["defmt"] }
 
 critical-section = "1.2.0"
+space-saving     = { git = "https://github.com/NiltonVolpato/space-saving", rev = "6bc6da5" }
 static_cell      = "2.1.1"
 
 [dev-dependencies]

@@ -1472,6 +1472,7 @@ dependencies = [
  "esp-rtos",
  "panic-rtt-target",
  "rtt-target",
+ "space-saving",
  "static_cell",
  "yonder-geometry",
  "yonder-raster",
@@ -1567,6 +1568,11 @@ name = "somni-parser"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0f368519fc6c85fc1afdb769fb5a51123f6158013e143656e25a3485a0d401c"
+
+[[package]]
+name = "space-saving"
+version = "0.1.0"
+source = "git+https://github.com/NiltonVolpato/space-saving?rev=6bc6da5#6bc6da59d6b56d5cb20de7091d0db9b779304270"
 
 [[package]]
 name = "stable_deref_trait"
