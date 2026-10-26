@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["api", "gallery", "geometry", "raster"]
+exclude = ["esp32"]
 
 [workspace.dependencies]
 yonder-geometry = { path = "geometry" }

@@ -1,0 +1,15 @@
+# The Xtensa linker and tools from `espup`, which cargo needs on the PATH.
+xtensa_gcc := "esp-15.2.0_20250920"
+export PATH := home_directory() / ".rustup/toolchains/esp/xtensa-esp-elf" / xtensa_gcc / "xtensa-esp-elf/bin:" + env("PATH")
+
+# Runs the on-device tests (the device must be connected).
+test *args:
+    cargo test --release {{args}}
+
+# Runs the circle benchmark on the device.
+bench:
+    cargo test --release --test circles
+
+# Flashes and runs the main binary.
+run:
+    cargo run --release
