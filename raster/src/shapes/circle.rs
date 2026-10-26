@@ -17,20 +17,21 @@ use yonder_geometry::shapes::Circle;
 use crate::{Coverage, Filled, Rasterizable, Stroked};
 
 impl Rasterizable for Filled<'_, Circle> {
-    fn rasterize(&self, clip: BoundingBox) -> impl Iterator<Item = Coverage> {
-        rasterize(Disk::grown(self.0, 0), None, clip)
+    fn rasterize(&self, clip: BoundingBox, mut emit: impl FnMut(Coverage)) {
+        rasterize(Disk::grown(self.0, 0), None, clip, &mut emit);
     }
 }
 
 impl Rasterizable for Stroked<'_, Circle> {
-    fn rasterize(&self, clip: BoundingBox) -> impl Iterator<Item = Coverage> {
+    fn rasterize(&self, clip: BoundingBox, mut emit: impl FnMut(Coverage)) {
         let width = i32::from(self.width);
         let inner = Disk::grown(self.shape, -width);
         rasterize(
             Disk::grown(self.shape, width),
             (inner.radius > 0).then_some(inner),
             clip,
-        )
+            &mut emit,
+        );
     }
 }
 
@@ -218,44 +219,31 @@ fn profile(
     }
 }
 
-fn rasterize(
-    outer: Disk,
-    inner: Option<Disk>,
-    clip: BoundingBox,
-) -> impl Iterator<Item = Coverage> {
+fn rasterize(outer: Disk, inner: Option<Disk>, clip: BoundingBox, emit: &mut impl FnMut(Coverage)) {
     let (first, end) = outer.rows();
     let first = first.max(clip.top_left.y.into()) as i16;
     let end = end.min(clip.bottom_right.y.into()).max(first.into()) as i16;
-    let clip_x = (clip.top_left.x, clip.bottom_right.x);
     // Only start the walk when a row is visible: it must begin near the disk.
-    (first < end)
-        .then(move || {
-            let mut chords = (
-                Chords::new(outer, first),
-                inner.map(|disk| Chords::new(disk, first)),
-            );
-            let mut top = (
-                chords.0.inside_on(first),
-                chords.1.as_mut().map(|inner| inner.inside_on(first)),
-            );
-            (first..end).flat_map(move |y| {
-                let bottom = (
-                    chords.0.inside_on(y + 1),
-                    chords.1.as_mut().map(|inner| inner.inside_on(y + 1)),
-                );
-                let outer_profile = profile(&outer, y, &top.0, &bottom.0);
-                let inner_profile = match (inner, &top.1, &bottom.1) {
-                    (Some(disk), Some(top), Some(bottom)) => {
-                        Some((disk, profile(&disk, y, top, bottom)))
-                    }
-                    _ => None,
-                };
-                top = bottom;
-                row(outer, outer_profile, inner_profile, y, clip_x)
-            })
-        })
-        .into_iter()
-        .flatten()
+    if first >= end {
+        return;
+    }
+    let clip_x = (clip.top_left.x, clip.bottom_right.x);
+    let mut outer_chords = Chords::new(outer, first);
+    let mut inner_chords = inner.map(|disk| Chords::new(disk, first));
+    let mut outer_top = outer_chords.inside_on(first);
+    let mut inner_top = inner_chords.as_mut().map(|chords| chords.inside_on(first));
+    for y in first..end {
+        let outer_bottom = outer_chords.inside_on(y + 1);
+        let inner_bottom = inner_chords.as_mut().map(|chords| chords.inside_on(y + 1));
+        let outer_profile = profile(&outer, y, &outer_top, &outer_bottom);
+        let inner_profile = match (inner, &inner_top, &inner_bottom) {
+            (Some(disk), Some(top), Some(bottom)) => Some((disk, profile(&disk, y, top, bottom))),
+            _ => None,
+        };
+        row(outer, outer_profile, inner_profile, y, clip_x, emit);
+        outer_top = outer_bottom;
+        inner_top = inner_bottom;
+    }
 }
 
 /// Splits a row at every range boundary. Within a segment, every cell is in the same
@@ -266,7 +254,8 @@ fn row(
     inner: Option<(Disk, Profile)>,
     y: i16,
     clip_x: (i16, i16),
-) -> impl Iterator<Item = Coverage> {
+    emit: &mut impl FnMut(Coverage),
+) {
     let inner_profile = inner.map_or(EMPTY, |(_, profile)| profile);
     let start = outer_profile.touched.0.max(clip_x.0);
     let end = outer_profile.touched.1.min(clip_x.1).max(start);
@@ -283,76 +272,48 @@ fn row(
     .map(|cut| cut.clamp(start, end));
     cuts.sort_unstable();
     let within = |range: (i16, i16), x: i16| range.0 <= x && x < range.1;
-    (0..7usize)
-        .filter(move |&index| cuts[index] < cuts[index + 1])
-        .flat_map(move |index| {
-            let (segment_start, segment_end) = (cuts[index], cuts[index + 1]);
-            let outer_full = within(outer_profile.full, segment_start);
-            let inner_touched = within(inner_profile.touched, segment_start);
-            if within(inner_profile.full, segment_start) {
-                Segment::Done
-            } else if outer_full && !inner_touched {
-                Segment::Span(Some(Coverage::Interior(cell_box(
-                    segment_start,
-                    segment_end,
-                    y,
-                ))))
-            } else {
-                Segment::Cells {
-                    end: segment_end,
-                    outer: (!outer_full).then(|| Cells::new(outer, segment_start, y)),
-                    inner: inner
-                        .filter(|_| inner_touched)
-                        .map(|(disk, _)| Cells::new(disk, segment_start, y)),
-                    x: segment_start,
-                    y,
+    for index in 0..7 {
+        let (segment_start, segment_end) = (cuts[index], cuts[index + 1]);
+        if segment_start >= segment_end || within(inner_profile.full, segment_start) {
+            continue;
+        }
+        let outer_full = within(outer_profile.full, segment_start);
+        let inner_touched = within(inner_profile.touched, segment_start);
+        let inner_disk = inner.filter(|_| inner_touched).map(|(disk, _)| disk);
+        // One loop per case, so the per-cell loop has no branches on which edges are present.
+        match (outer_full, inner_disk) {
+            (true, None) => emit(Coverage::Interior(cell_box(segment_start, segment_end, y))),
+            (false, None) => {
+                let mut outer_cells = Cells::new(outer, segment_start, y);
+                for x in segment_start..segment_end {
+                    emit_cell(x, y, outer_cells.area(), emit);
                 }
             }
-        })
-}
-
-enum Segment {
-    Done,
-    Span(Option<Coverage>),
-    Cells {
-        y: i16,
-        x: i16,
-        end: i16,
-        outer: Option<Cells>,
-        inner: Option<Cells>,
-    },
-}
-
-impl Iterator for Segment {
-    type Item = Coverage;
-
-    fn next(&mut self) -> Option<Coverage> {
-        match self {
-            Segment::Done => None,
-            Segment::Span(span) => span.take(),
-            Segment::Cells {
-                y,
-                x,
-                end,
-                outer,
-                inner,
-            } => {
-                while *x < *end {
-                    let outer_area = outer.as_mut().map_or(FULL, Cells::area);
-                    let inner_area = inner.as_mut().map_or(0, Cells::area);
-                    let coverage =
-                        (((outer_area - inner_area).max(0) * 255 + FULL / 2) / FULL) as u8;
-                    let position = Point::new(*x, *y);
-                    *x += 1;
-                    match coverage {
-                        0 => {}
-                        255 => return Some(Coverage::Interior(cell_box(*x - 1, *x, *y))),
-                        partial => return Some(Coverage::Boundary(position, partial)),
-                    }
+            (true, Some(inner_disk)) => {
+                let mut inner_cells = Cells::new(inner_disk, segment_start, y);
+                for x in segment_start..segment_end {
+                    emit_cell(x, y, FULL - inner_cells.area(), emit);
                 }
-                None
+            }
+            (false, Some(inner_disk)) => {
+                let mut outer_cells = Cells::new(outer, segment_start, y);
+                let mut inner_cells = Cells::new(inner_disk, segment_start, y);
+                for x in segment_start..segment_end {
+                    let area = outer_cells.area() - inner_cells.area();
+                    emit_cell(x, y, area, emit);
+                }
             }
         }
+    }
+}
+
+/// Emits one cell with `area` in 1/65536 pixel, skipping empty cells.
+#[inline(always)]
+fn emit_cell(x: i16, y: i16, area: i32, emit: &mut impl FnMut(Coverage)) {
+    match ((area.max(0) * 255 + FULL / 2) / FULL) as u8 {
+        0 => {}
+        255 => emit(Coverage::Interior(cell_box(x, x + 1, y))),
+        partial => emit(Coverage::Boundary(Point::new(x, y), partial)),
     }
 }
 
@@ -496,7 +457,7 @@ mod tests {
     }
 
     /// Coverage per pixel, checking that no pixel is produced twice.
-    fn pixels(items: impl Iterator<Item = Coverage>) -> HashMap<(i16, i16), u8> {
+    fn pixels(shape: &impl Rasterizable, clip: BoundingBox) -> HashMap<(i16, i16), u8> {
         let mut out = HashMap::new();
         let mut put = |x, y, coverage| {
             assert!(
@@ -504,23 +465,27 @@ mod tests {
                 "pixel ({x}, {y}) twice"
             )
         };
-        for item in items {
-            match item {
-                Coverage::Boundary(position, coverage) => {
-                    assert!(coverage > 0 && coverage < 255);
-                    put(position.x, position.y, coverage);
-                }
-                Coverage::Partial(..) => unreachable!("circles emit no uniform partial areas"),
-                Coverage::Interior(bounds) => {
-                    for y in bounds.top_left.y..bounds.bottom_right.y {
-                        for x in bounds.top_left.x..bounds.bottom_right.x {
-                            put(x, y, 255);
-                        }
+        shape.rasterize(clip, |item| match item {
+            Coverage::Boundary(position, coverage) => {
+                assert!(coverage > 0 && coverage < 255);
+                put(position.x, position.y, coverage);
+            }
+            Coverage::Partial(..) => unreachable!("circles emit no uniform partial areas"),
+            Coverage::Interior(bounds) => {
+                for y in bounds.top_left.y..bounds.bottom_right.y {
+                    for x in bounds.top_left.x..bounds.bottom_right.x {
+                        put(x, y, 255);
                     }
                 }
             }
-        }
+        });
         out
+    }
+
+    fn count(shape: &impl Rasterizable, clip: BoundingBox) -> usize {
+        let mut count = 0;
+        shape.rasterize(clip, |_| count += 1);
+        count
     }
 
     fn area(covered: &HashMap<(i16, i16), u8>) -> f64 {
@@ -569,7 +534,7 @@ mod tests {
     #[test]
     fn fill_area_matches_disk() {
         for (circle, radius) in circles() {
-            let covered = pixels(Filled(&circle).rasterize(screen()));
+            let covered = pixels(&Filled(&circle), screen());
             let expected = core::f64::consts::PI * radius * radius;
             // Linear crossings sit slightly inside the convex edge: about 1 px² short in total,
             // whatever the radius.
@@ -586,11 +551,11 @@ mod tests {
         for (circle, radius) in circles() {
             for width in [1u16, 2, 3, 6] {
                 let covered = pixels(
-                    Stroked {
+                    &Stroked {
                         shape: &circle,
                         width,
-                    }
-                    .rasterize(screen()),
+                    },
+                    screen(),
                 );
                 let (outer, inner) = (
                     radius + f64::from(width) / 2.0,
@@ -615,7 +580,7 @@ mod tests {
     #[test]
     fn centered_circle_is_symmetric() {
         let circle = Circle::new(PointT2::pixel_center(Point::new(0, 0)), 6);
-        let covered = pixels(Filled(&circle).rasterize(screen()));
+        let covered = pixels(&Filled(&circle), screen());
         for (&(x, y), &coverage) in &covered {
             for mirror in [(-x, y), (x, -y), (y, x)] {
                 assert_eq!(
@@ -630,9 +595,9 @@ mod tests {
     #[test]
     fn clipping_keeps_the_same_pixels() {
         for (circle, _) in circles() {
-            let full = pixels(Filled(&circle).rasterize(screen()));
+            let full = pixels(&Filled(&circle), screen());
             let clip = BoundingBox::new(Point::new(-3, -2), Point::new(4, 5));
-            let clipped = pixels(Filled(&circle).rasterize(clip));
+            let clipped = pixels(&Filled(&circle), clip);
             let expected: HashMap<_, _> = full
                 .into_iter()
                 .filter(|&((x, y), _)| (-3..4).contains(&x) && (-2..5).contains(&y))
@@ -657,13 +622,13 @@ mod tests {
         ];
         for circle in &circles {
             for clip in clips {
-                assert!(Filled(circle).rasterize(clip).count() > 0);
+                assert!(count(&Filled(circle), clip) > 0);
                 let ring = Stroked {
                     shape: circle,
                     width: 9,
                 };
                 assert!(
-                    ring.rasterize(clip).count() > 0,
+                    count(&ring, clip) > 0,
                     "{:?} {clip:?}",
                     circle.homogeneous()
                 );
@@ -675,7 +640,7 @@ mod tests {
     fn tiny_circle_is_not_lost() {
         // Diameter 1 on a pixel center: no lattice point is inside.
         let circle = Circle::in_box(BoundingBox::new(Point::new(0, 0), Point::new(1, 1)));
-        let covered = pixels(Filled(&circle).rasterize(screen()));
+        let covered = pixels(&Filled(&circle), screen());
         assert!(area(&covered) > 0.5, "{covered:?}");
     }
 }

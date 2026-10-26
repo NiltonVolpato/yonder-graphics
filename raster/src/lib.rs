@@ -18,9 +18,10 @@ pub enum Coverage {
 }
 
 pub trait Rasterizable {
-    // Rasterizes the shape into an iterator of `Coverage` values, clipped to the given bounding box.
-    // The iterator must not return overlapping regions.
-    fn rasterize(&self, clip: BoundingBox) -> impl Iterator<Item = Coverage>;
+    // Rasterizes the shape, clipped to the given bounding box, calling `emit` with each
+    // `Coverage` value. The values must not overlap. A callback rather than an iterator:
+    // on the device, iterator state machines cost about half the rasterization time.
+    fn rasterize(&self, clip: BoundingBox, emit: impl FnMut(Coverage));
 }
 
 /// The interior of a shape.

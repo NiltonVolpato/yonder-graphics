@@ -44,13 +44,13 @@ mod tests {
 
         s3::profiler::start(timg1);
         for _ in 0..400 {
-            for item in ring.rasterize(screen) {
+            ring.rasterize(screen, |item| {
                 black_box(match item {
                     Coverage::Boundary(position, coverage) => (position.x, coverage),
                     Coverage::Partial(bounds, coverage) => (bounds.width(), coverage),
                     Coverage::Interior(bounds) => (bounds.width(), 255),
                 });
-            }
+            });
         }
         s3::profiler::stop();
     }

@@ -1,8 +1,7 @@
 //! Times circle rasterization on the device. Run with `just bench`.
 //!
-//! Only rasterization is timed: the coverage items are consumed with `black_box`, not
-//! blended. Uses only API that existed before the incremental walk, so the same file can
-//! time older commits.
+//! Only rasterization is timed: the coverage items are folded into a checksum, not
+//! blended.
 
 #![no_std]
 #![no_main]
@@ -37,9 +36,10 @@ mod tests {
     }
 
     /// Consumes every item so the work can't be optimized away.
-    fn consume(items: impl Iterator<Item = Coverage>) -> u32 {
-        items
-            .map(|item| match item {
+    fn consume(shape: &impl Rasterizable, clip: BoundingBox) -> u32 {
+        let mut sum = 0u32;
+        shape.rasterize(clip, |item| {
+            let value = match item {
                 Coverage::Boundary(position, coverage) => {
                     position.x as u32 ^ u32::from(coverage)
                 }
@@ -47,8 +47,10 @@ mod tests {
                     bounds.width() as u32 ^ u32::from(coverage)
                 }
                 Coverage::Interior(bounds) => bounds.width() as u32,
-            })
-            .fold(0, u32::wrapping_add)
+            };
+            sum = sum.wrapping_add(value);
+        });
+        sum
     }
 
     fn time(label: &str, size: i16, mut run: impl FnMut() -> u32) {
@@ -78,24 +80,24 @@ mod tests {
         for radius in [4, 16, 64, 110] {
             let circle = black_box(lattice(radius));
             time("fill, lattice center, radius", radius, || {
-                consume(Filled(&circle).rasterize(screen))
+                consume(&Filled(&circle), screen)
             });
         }
         for radius in [16, 64] {
             let circle = black_box(pixel_center(radius));
             time("fill, pixel center, radius", radius, || {
-                consume(Filled(&circle).rasterize(screen))
+                consume(&Filled(&circle), screen)
             });
         }
         for width in [1, 8] {
             let circle = black_box(lattice(64));
             time("ring, radius 64, width", width as i16, || {
-                consume(Stroked { shape: &circle, width }.rasterize(screen))
+                consume(&Stroked { shape: &circle, width }, screen)
             });
         }
         let circle = black_box(lattice(110));
         time("fill, radius 110, 16-row band, radius", 110, || {
-            consume(Filled(&circle).rasterize(band))
+            consume(&Filled(&circle), band)
         });
     }
 
@@ -112,7 +114,7 @@ mod tests {
         };
         let screen = BoundingBox::new(Point::new(0, 0), Point::new(SIDE, SIDE));
         time("390x390 ring, full frame, width", 16, || {
-            consume(ring.rasterize(screen))
+            consume(&ring, screen)
         });
         time("390x390 ring, all 16-row bands, width", 16, || {
             (0..SIDE)
@@ -122,7 +124,7 @@ mod tests {
                         Point::new(0, top),
                         Point::new(SIDE, (top + BAND).min(SIDE)),
                     );
-                    consume(ring.rasterize(band))
+                    consume(&ring, band)
                 })
                 .fold(0, u32::wrapping_add)
         });

@@ -27,15 +27,18 @@ where
         };
         let (shape, style) = (self.shape(), self.style());
         let clip = buffer.bounds();
-        if let Some(paint) = style.fill {
-            blend(&mut buffer, Filled(shape).rasterize(clip), paint);
+        if let Some(Paint::Solid(color)) = style.fill {
+            let color = convert(color);
+            Filled(shape).rasterize(clip, |coverage| blend(&mut buffer, coverage, color));
         }
         if let Some(stroke) = style.stroke {
+            let Paint::Solid(color) = stroke.paint;
+            let color = convert(color);
             let outline = Stroked {
                 shape,
                 width: stroke.width,
             };
-            blend(&mut buffer, outline.rasterize(clip), stroke.paint);
+            outline.rasterize(clip, |coverage| blend(&mut buffer, coverage, color));
         }
     }
 }
@@ -122,22 +125,14 @@ impl<C: Color> Footprint for Pixel<C> {
     }
 }
 
-fn blend<B, C>(buffer: &mut B, coverage: impl Iterator<Item = Coverage>, paint: Paint<C>)
-where
-    B: PixelBuffer,
-    C: Into<B::Color>,
-{
-    let Paint::Solid(color) = paint;
-    let color = convert(color);
-    for c in coverage {
-        match c {
-            Coverage::Interior(area) => buffer.blend_color(&area, color),
-            Coverage::Partial(area, coverage) => buffer.blend_color(&area, scale(color, coverage)),
-            Coverage::Boundary(position, coverage) => buffer.blend_iter(iter::once(Pixel {
-                position,
-                color: scale(color, coverage),
-            })),
-        }
+fn blend<B: PixelBuffer>(buffer: &mut B, coverage: Coverage, color: WithAlpha<B::Color>) {
+    match coverage {
+        Coverage::Interior(area) => buffer.blend_color(&area, color),
+        Coverage::Partial(area, coverage) => buffer.blend_color(&area, scale(color, coverage)),
+        Coverage::Boundary(position, coverage) => buffer.blend_iter(iter::once(Pixel {
+            position,
+            color: scale(color, coverage),
+        })),
     }
 }
 

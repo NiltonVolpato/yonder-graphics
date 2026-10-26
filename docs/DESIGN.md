@@ -76,9 +76,11 @@ api/        → geometry, raster
   }
 
   pub trait Rasterizable {
-      fn rasterize(&self, clip: BoundingBox) -> impl Iterator<Item = Coverage>;
+      fn rasterize(&self, clip: BoundingBox, emit: impl FnMut(Coverage));
   }
   ```
+
+- `rasterize` calls `emit` instead of returning an iterator. On the ESP32-S3, the iterator's state machines and their `memcpy`s took about half the time of rasterizing a circle; with the callback the rasterizer is plain loops.
 
 - `Partial` exists because a horizontal or vertical edge that cuts pixels in half gives a whole row of equal coverage (for example a centered 1-pixel stroke on a grid-aligned rectangle). It becomes one blend call instead of one per pixel. Emitting single pixels as 1×1 boxes would be inefficient, so `Boundary` stays.
 - `Coverage` is not `#[non_exhaustive]`. A new variant must break compilation in `api`, not fall into a `_ =>` arm and get dropped.
