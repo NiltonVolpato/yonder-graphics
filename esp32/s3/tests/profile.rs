@@ -71,4 +71,49 @@ mod tests {
         }
         s3::profiler::stop();
     }
+
+    /// A band of the screen, as in the `blend` test.
+    struct Band<'a> {
+        pixels: &'a mut [yonder_graphics::prelude::Rgb565],
+        bounds: BoundingBox,
+    }
+
+    impl yonder_graphics::surface::Surface for Band<'_> {
+        type Color = yonder_graphics::prelude::Rgb565;
+
+        fn viewport(
+            &mut self,
+            item: &impl yonder_graphics::surface::Footprint,
+        ) -> Option<impl yonder_graphics::surface::PixelBuffer<Color = Self::Color>> {
+            item.extent().intersection(&self.bounds)?;
+            Some(yonder_graphics::surface::Viewport::new(
+                self.pixels,
+                self.bounds,
+            ))
+        }
+    }
+
+    /// Drawing the 390x390 ring in 16-row bands, rasterizing and blending, about 5 s of it.
+    #[test]
+    fn ring_draw(timg1: TIMG1<'static>) {
+        use yonder_graphics::prelude::*;
+        yonder_graphics::simd::enable_pie();
+        static mut PIXELS: [Rgb565; 390 * 16] = [Rgb565::BLACK; 390 * 16];
+        // SAFETY: only this test uses it.
+        let pixels = unsafe { &mut *(&raw mut PIXELS) };
+        let circle = Circle::new(PointT2::new(195, 195, 1), 179);
+        let ring = black_box(
+            circle.with_style(Style::new().stroke(Stroke::new(16, Paint::solid(Rgb565::RED)))),
+        );
+        s3::profiler::start(timg1);
+        for _ in 0..900 {
+            for top in (0..390).step_by(16) {
+                let bounds =
+                    BoundingBox::new(Point::new(0, top), Point::new(390, (top + 16).min(390)));
+                let pixels = &mut pixels[..390 * bounds.height() as usize];
+                ring.draw(&mut Band { pixels, bounds });
+            }
+        }
+        s3::profiler::stop();
+    }
 }
