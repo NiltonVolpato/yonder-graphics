@@ -17,6 +17,12 @@ pub trait Color: Copy + PartialEq + Hash {
     /// Blends `src` over every pixel in `dst`. Work that depends only on `src` should
     /// be done once per call, not once per pixel.
     fn blend_slice(dst: &mut [Self], src: WithAlpha<Self>);
+
+    /// Blends `src` over one pixel.
+    #[inline]
+    fn blend(dst: &mut Self, src: WithAlpha<Self>) {
+        Self::blend_slice(core::slice::from_mut(dst), src);
+    }
 }
 
 /// A color plus the opacity to blend it with (255 = opaque). Screens never store alpha.
@@ -66,7 +72,21 @@ impl Rgb565 {
     pub const fn b(self) -> u8 {
         (self.0 & 0x1f) as u8
     }
+
+    /// The channels spread apart (G high, R and B low), so one multiply blends all three.
+    const fn spread(self) -> u32 {
+        (self.0 as u32 | (self.0 as u32) << 16) & SPREAD_MASK
+    }
+
+    /// Blends `src`, spread and multiplied by its alpha `a` (0..=32), over this pixel.
+    #[inline(always)]
+    fn mix(&mut self, src: u32, a: u32) {
+        let mixed = ((src + self.spread() * (32 - a)) >> 5) & SPREAD_MASK;
+        self.0 = (mixed | (mixed >> 16)) as u16;
+    }
 }
+
+const SPREAD_MASK: u32 = 0x07e0_f81f;
 
 impl Color for Rgb565 {
     named_colors!();
@@ -79,19 +99,25 @@ impl Color for Rgb565 {
             #[cfg(not(feature = "esp32s3-simd"))]
             u8::MAX => dst.fill(src.color),
             alpha => {
-                // Spread the channels apart (G high, R and B low) so one multiply blends all three.
-                const MASK: u32 = 0x07e0_f81f;
-                let spread = |c: Rgb565| (u32::from(c.0) | (u32::from(c.0) << 16)) & MASK;
                 let a = (u32::from(alpha) + 4) >> 3; // 0..=32
-                let mixed_src = spread(src.color) * a;
-                let blend = |d: &mut Rgb565| {
-                    let mixed = ((mixed_src + spread(*d) * (32 - a)) >> 5) & MASK;
-                    d.0 = (mixed | (mixed >> 16)) as u16;
-                };
+                let src_times_a = src.color.spread() * a;
+                let blend = |d: &mut Rgb565| d.mix(src_times_a, a);
                 #[cfg(feature = "esp32s3-simd")]
                 crate::simd::blend(dst, src.color, a, blend);
                 #[cfg(not(feature = "esp32s3-simd"))]
                 dst.iter_mut().for_each(blend);
+            }
+        }
+    }
+
+    #[inline]
+    fn blend(dst: &mut Self, src: WithAlpha<Self>) {
+        match src.alpha {
+            0 => {}
+            u8::MAX => *dst = src.color,
+            alpha => {
+                let a = (u32::from(alpha) + 4) >> 3; // 0..=32
+                dst.mix(src.color.spread() * a, a);
             }
         }
     }

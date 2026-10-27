@@ -39,6 +39,9 @@ pub trait PixelBuffer: Bounded {
     where
         I: IntoIterator<Item = Pixel<Self::Color>>;
 
+    /// Blends `color` over the pixel at `position`.
+    fn blend_pixel(&mut self, position: Point, color: WithAlpha<Self::Color>);
+
     /// Blends the same color over every pixel of `area`.
     fn blend_color(&mut self, area: &BoundingBox, color: WithAlpha<Self::Color>);
 
@@ -97,6 +100,20 @@ impl<C: Color> PixelBuffer for Viewport<'_, C> {
         for Pixel { position: p, color } in pixels {
             C::blend_slice(self.span(p.y, p.x, p.x + 1), color);
         }
+    }
+
+    #[inline]
+    fn blend_pixel(&mut self, position: Point, color: WithAlpha<C>) {
+        let BoundingBox {
+            top_left,
+            bottom_right,
+        } = self.bounds;
+        debug_assert!(top_left.x <= position.x && position.x < bottom_right.x);
+        let row = (position.y - top_left.y) as usize * self.bounds.width() as usize;
+        C::blend(
+            &mut self.pixels[row + (position.x - top_left.x) as usize],
+            color,
+        );
     }
 
     fn blend_color(&mut self, area: &BoundingBox, color: WithAlpha<C>) {

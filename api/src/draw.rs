@@ -1,5 +1,4 @@
 use core::hash::{Hash, Hasher};
-use core::iter;
 
 use yonder_geometry::screen::{Bounded, BoundingBox, Point};
 use yonder_raster::{Coverage, Filled, Rasterizable, Stroked};
@@ -100,10 +99,7 @@ where
             return;
         };
         if buffer.bounds().contains(&self.extent()) {
-            buffer.blend_iter(iter::once(Pixel {
-                position: self.position,
-                color: convert(self.color),
-            }));
+            buffer.blend_pixel(self.position, convert(self.color));
         }
     }
 }
@@ -129,10 +125,9 @@ fn blend<B: PixelBuffer>(buffer: &mut B, coverage: Coverage, color: WithAlpha<B:
     match coverage {
         Coverage::Interior(area) => buffer.blend_color(&area, color),
         Coverage::Partial(area, coverage) => buffer.blend_color(&area, scale(color, coverage)),
-        Coverage::Boundary(position, coverage) => buffer.blend_iter(iter::once(Pixel {
-            position,
-            color: scale(color, coverage),
-        })),
+        Coverage::Boundary(position, coverage) => {
+            buffer.blend_pixel(position, scale(color, coverage))
+        }
     }
 }
 
