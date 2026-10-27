@@ -13,3 +13,7 @@ yonder-raster.workspace = true
 
 [dev-dependencies]
 yonder-geometry = { workspace = true, features = ["std"] }
+
+[[bench]]
+name = "scenes"
+harness = false
