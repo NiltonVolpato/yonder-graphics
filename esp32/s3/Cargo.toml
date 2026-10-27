@@ -73,7 +73,7 @@ embedded-test = { version = "0.7.1", features = [
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1     # LLVM can perform better optimizations using a single thread
-debug         = 2     # prefer slower builds but better debugging experience
-lto           = 'fat'
-opt-level     = 's'
+opt-level     = 3       # much faster than 's' for little more space
+codegen-units = 1       # LLVM can perform better optimizations using a single thread
+debug         = "full"  # prefer slower builds but better debugging experience
+lto           = "fat"
