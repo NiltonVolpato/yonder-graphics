@@ -1,5 +1,7 @@
 //! Surfaces and scenes written the way a user of the library would write them.
 
+pub mod zingl;
+
 use std::fs::File;
 use std::io::BufWriter;
 use std::marker::PhantomData;

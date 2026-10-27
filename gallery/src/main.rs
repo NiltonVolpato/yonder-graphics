@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use yonder_gallery::{BACKGROUND, Framebuffer, basic, buttons, circles, save_png, strokes};
+use yonder_gallery::{BACKGROUND, Framebuffer, basic, buttons, circles, save_png, strokes, zingl};
 use yonder_graphics::color::{Rgb565, Rgb888};
 
 fn render(width: i16, height: i16, zoom: usize, name: &str, scene: fn(&mut Framebuffer<Rgb888>)) {
@@ -30,4 +30,8 @@ fn main() {
     render(240, 56, 4, "strokes.png", strokes);
     render(56, 44, 14, "strokes-zoom.png", strokes);
     render(190, 44, 4, "buttons.png", buttons);
+
+    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/gallery");
+    zingl::compare(&out.join("zingl-vs-ours.png"));
+    zingl::invisible_cells(&out.join("invisible-cells.png"));
 }
