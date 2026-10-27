@@ -66,8 +66,19 @@ mod tests {
                     Rgb565::blend_slice(&mut pixels[start..start + len], color.with_alpha(alpha));
                     for (i, (&got, &was)) in pixels.iter().zip(&before).enumerate() {
                         let inside = (start..start + len).contains(&i);
-                        let want = if inside { reference(was, color, alpha) } else { was };
-                        assert!(got == want, "alpha {}, start {}, len {}, pixel {}", alpha, start, len, i);
+                        let want = if inside {
+                            reference(was, color, alpha)
+                        } else {
+                            was
+                        };
+                        assert!(
+                            got == want,
+                            "alpha {}, start {}, len {}, pixel {}",
+                            alpha,
+                            start,
+                            len,
+                            i
+                        );
                     }
                 }
             }
@@ -80,7 +91,11 @@ mod tests {
             run();
         }
         let micros = start.elapsed().as_micros();
-        defmt::info!("{=str}: {=u64} ns", label, micros * 1000 / u64::from(ITERATIONS));
+        defmt::info!(
+            "{=str}: {=u64} ns",
+            label,
+            micros * 1000 / u64::from(ITERATIONS)
+        );
     }
 
     /// One row of the screen, filled and blended with SIMD and with the scalar formula.
@@ -91,7 +106,9 @@ mod tests {
         time("390-pixel row, fill, SIMD", || {
             Rgb565::blend_slice(black_box(&mut row[1..]), color.with_alpha(255))
         });
-        time("390-pixel row, fill, scalar", || black_box(&mut row[1..]).fill(color));
+        time("390-pixel row, fill, scalar", || {
+            black_box(&mut row[1..]).fill(color)
+        });
         time("390-pixel row, blend, SIMD", || {
             Rgb565::blend_slice(black_box(&mut row[1..]), color.with_alpha(128))
         });
@@ -123,7 +140,8 @@ mod tests {
         T: for<'a> Drawable<Band<'a>>,
     {
         for top in (0..SIDE).step_by(BAND as usize) {
-            let bounds = BoundingBox::new(Point::new(0, top), Point::new(SIDE, (top + BAND).min(SIDE)));
+            let bounds =
+                BoundingBox::new(Point::new(0, top), Point::new(SIDE, (top + BAND).min(SIDE)));
             let pixels = &mut pixels[..bounds.width() as usize * bounds.height() as usize];
             item.draw(&mut Band { pixels, bounds });
         }
@@ -131,7 +149,8 @@ mod tests {
 
     #[test]
     fn scenes() {
-        static mut PIXELS: [Rgb565; SIDE as usize * BAND as usize] = [Rgb565::BLACK; SIDE as usize * BAND as usize];
+        static mut PIXELS: [Rgb565; SIDE as usize * BAND as usize] =
+            [Rgb565::BLACK; SIDE as usize * BAND as usize];
         // SAFETY: only this test uses it.
         let pixels = unsafe { &mut *(&raw mut PIXELS) };
         let circle = Circle::new(PointT2::new(195, 195, 1), 179);
@@ -140,8 +159,12 @@ mod tests {
         let disk = black_box(circle.with_style(Style::new().fill(red)));
         time("390x390 disk, opaque", || draw_in_bands(pixels, &disk));
         let disk = black_box(circle.with_style(Style::new().fill(red.alpha(128))));
-        time("390x390 disk, half transparent", || draw_in_bands(pixels, &disk));
+        time("390x390 disk, half transparent", || {
+            draw_in_bands(pixels, &disk)
+        });
         let ring = black_box(circle.with_style(Style::new().stroke(Stroke::new(16, red))));
-        time("390x390 ring, width 16, opaque", || draw_in_bands(pixels, &ring));
+        time("390x390 ring, width 16, opaque", || {
+            draw_in_bands(pixels, &ring)
+        });
     }
 }

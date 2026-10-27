@@ -47,8 +47,10 @@ mod tests {
         let cell = 390 / per_row as i16;
         for i in 0..count {
             let (x, y) = ((i % per_row) as i16 * cell, (i / per_row) as i16 * cell);
-            let (top_left, bottom_right) =
-                (Point::new(x + 2, y + 2), Point::new(x + cell - 2, y + cell - 2));
+            let (top_left, bottom_right) = (
+                Point::new(x + 2, y + 2),
+                Point::new(x + cell - 2, y + cell - 2),
+            );
             match i % 3 {
                 0 => Rectangle::new(top_left, bottom_right)
                     .with_style(button)

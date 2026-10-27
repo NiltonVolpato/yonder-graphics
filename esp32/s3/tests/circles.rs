@@ -147,7 +147,13 @@ mod tests {
         for width in [1, 8] {
             let circle = black_box(lattice(64));
             time("ring, radius 64, width", width as i16, || {
-                consume(&Stroked { shape: &circle, width }, screen)
+                consume(
+                    &Stroked {
+                        shape: &circle,
+                        width,
+                    },
+                    screen,
+                )
             });
         }
         let circle = black_box(lattice(110));
