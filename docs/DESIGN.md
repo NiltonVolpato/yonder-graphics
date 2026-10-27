@@ -121,6 +121,7 @@ api/        → geometry, raster
 - References: `impl<T: Styled + ?Sized> Styled for &T` forwards, so the blanket impl covers `&T`. A separate `impl Drawable for &D` would conflict with the blanket impl, because `&T` is fundamental and downstream crates could implement `Styled` for `&TheirType`. Drawables that are not styled (text, images) don't get a `&D` impl. That only matters for generic functions that take `impl Drawable<S>` by value.
 - `shape.with_style(style)` gives a `WithStyle<S, C>`, which stores the style. It needs the color parameter because it stores a `Style<C>` and shapes have no color type. It is built only by `with_style`. Themed types such as `WithTheme<Button>` store nothing and get their style from the type.
 - Draw order: fill first, then stroke. The inner half of the stroke blends over the fill.
+- Under an opaque stroke at least 2 px wide, the fill is drawn without antialiasing (pixels whose center is inside): its edge is hidden by the stroke, so antialiasing it would be paid for and never seen. Not implemented yet. The threshold comes from geometry (exact from 2√2 px; at 2 px a level or two can show on diagonals) and is to be confirmed by comparing pixels.
 
 ## Damage tracking
 

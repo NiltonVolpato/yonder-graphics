@@ -35,22 +35,54 @@ mod tests {
         rtt_target::rtt_init_defmt!();
     }
 
-    /// Consumes every item so the work can't be optimized away.
+    /// Folds an item into a checksum, so the work can't be optimized away.
+    fn checksum(item: Coverage) -> u32 {
+        match item {
+            Coverage::Boundary(position, coverage) => position.x as u32 ^ u32::from(coverage),
+            Coverage::Partial(bounds, coverage) => bounds.width() as u32 ^ u32::from(coverage),
+            Coverage::Interior(bounds) => bounds.width() as u32,
+        }
+    }
+
     fn consume(shape: &impl Rasterizable, clip: BoundingBox) -> u32 {
         let mut sum = 0u32;
-        shape.rasterize(clip, |item| {
-            let value = match item {
-                Coverage::Boundary(position, coverage) => {
-                    position.x as u32 ^ u32::from(coverage)
-                }
-                Coverage::Partial(bounds, coverage) => {
-                    bounds.width() as u32 ^ u32::from(coverage)
-                }
-                Coverage::Interior(bounds) => bounds.width() as u32,
-            };
-            sum = sum.wrapping_add(value);
-        });
+        shape.rasterize(clip, |item| sum = sum.wrapping_add(checksum(item)));
         sum
+    }
+
+    /// A circle without antialiasing, one span per row: the lattice points inside, walked
+    /// top to bottom with F updated by additions and mirrored left to right. A lower bound
+    /// for the antialiased fill. shortcut: no clipping, the benchmark circles fit the screen.
+    fn plain_circle(center: Point, r: i16, mut emit: impl FnMut(Coverage)) {
+        let mut span = |half_width: i32, y: i16| {
+            let (left, right) = (center.x - half_width as i16, center.x + half_width as i16);
+            let y = center.y + y;
+            emit(Coverage::Interior(BoundingBox::new(
+                Point::new(left, y),
+                Point::new(right + 1, y + 1),
+            )));
+        };
+        let mut x: i32 = 0;
+        let mut f: i32 = 0; // F(0, -r) = 0
+        // Top half: the chord widens. F(x + 1, y) = F(x, y) + 2x + 1.
+        for y in -r..=0 {
+            while f + 2 * x + 1 <= 0 {
+                f += 2 * x + 1;
+                x += 1;
+            }
+            span(x, y);
+            // F(x, y + 1) = F(x, y) + 2y + 1.
+            f += 2 * i32::from(y) + 1;
+        }
+        // Bottom half: the chord narrows. F(x − 1, y) = F(x, y) − 2x + 1.
+        for y in 1..=r {
+            while f > 0 {
+                f += -2 * x + 1;
+                x -= 1;
+            }
+            span(x, y);
+            f += 2 * i32::from(y) + 1;
+        }
     }
 
     fn time(label: &str, size: i16, mut run: impl FnMut() -> u32) {
@@ -81,6 +113,16 @@ mod tests {
             let circle = black_box(lattice(radius));
             time("fill, lattice center, radius", radius, || {
                 consume(&Filled(&circle), screen)
+            });
+        }
+        for radius in [4, 16, 64, 110] {
+            let radius = black_box(radius);
+            time("fill without antialiasing, radius", radius, || {
+                let mut sum = 0u32;
+                plain_circle(Point::new(160, 120), radius, |item| {
+                    sum = sum.wrapping_add(checksum(item))
+                });
+                sum
             });
         }
         for radius in [16, 64] {
