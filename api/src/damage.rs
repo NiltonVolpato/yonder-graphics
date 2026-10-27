@@ -33,11 +33,35 @@ impl Default for TileHasher {
     }
 }
 
+// Every write is one step per 16 bits: the derived `Hash` impls also call `write_u8` and
+// `write_usize` (enum discriminants), which would otherwise go byte by byte through `write`.
 impl Hasher for TileHasher {
     fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = accumulate(self.0, byte.into());
+        let (pairs, rest) = bytes.as_chunks::<2>();
+        for &pair in pairs {
+            self.write_u16(u16::from_le_bytes(pair));
         }
+        for &byte in rest {
+            self.write_u16(byte.into());
+        }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.write_u16(value.into());
+    }
+
+    fn write_i8(&mut self, value: i8) {
+        self.write_u16(value as u16);
+    }
+
+    // shortcut: on 64-bit hosts the high half is dropped; these hash lengths and enum
+    // discriminants, which are small.
+    fn write_usize(&mut self, value: usize) {
+        self.write_u32(value as u32);
+    }
+
+    fn write_isize(&mut self, value: isize) {
+        self.write_u32(value as u32);
     }
 
     fn write_u16(&mut self, value: u16) {
