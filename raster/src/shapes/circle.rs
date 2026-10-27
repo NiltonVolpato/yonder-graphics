@@ -15,6 +15,9 @@
 //! `4 · offset + 4`. Positions are `i16` screen coordinates. `F` is `i32`: it is only
 //! evaluated near the edge, where it stays small.
 
+#[allow(dead_code)] // not used by `rasterize` until it is benchmarked
+mod the_walk;
+
 use yonder_geometry::screen::{BoundingBox, Point};
 use yonder_geometry::shapes::Circle;
 

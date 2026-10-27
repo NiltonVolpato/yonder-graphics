@@ -49,6 +49,14 @@ impl Circle {
         }
     }
 
+    pub const fn center(&self) -> PointT2 {
+        self.center
+    }
+
+    pub const fn radius(&self) -> i32 {
+        self.radius
+    }
+
     /// The circle as integers `[x, y, w, r]`: center `(x / w, y / w)`, radius `r / w`, `w > 0`.
     pub const fn homogeneous(&self) -> [i32; 4] {
         let (x, y, w) = self.center.coords();
