@@ -1,10 +1,8 @@
 //! The walk: a circle rasterizer that visits only the pixels the circle cuts.
 //!
-//! It follows the left half of the boundary from the top pixel next to the vertical axis down to the bottom one.
-//! Each pixel is entered through one crossing and left through another, and its coverage is the area between them.
-//! The right half is the mirror image, and the pixels between the two halves are filled with spans.
-
-use core::ops::ControlFlow::{self, Break, Continue};
+//! It follows the top-left quarter of the boundary, from the top pixel next to the vertical axis down to the row at
+//! the center. Each pixel is entered through one crossing and left through another, and its coverage is the area
+//! between them. The other three quarters are mirror images, and the pixels between them are filled with spans.
 
 use yonder_geometry::{screen::Point, shapes::Circle};
 
@@ -41,19 +39,19 @@ impl Crossing {
     }
 
     /// The pixel on the other side of this crossing, seen from `pixel`.
-    /// A diagonal crossing leads one pixel down and `diagonal_dx` pixels sideways.
-    pub fn next_pixel(self, pixel: Point, diagonal_dx: i16) -> Point {
+    /// A diagonal crossing leads one pixel down and to the left, the way the walk goes.
+    pub fn next_pixel(self, pixel: Point) -> Point {
         let Point { x, y } = pixel;
         match self {
             Crossing::Top(..) => Point::new(x, y - 1),
             Crossing::Right(..) => Point::new(x + 1, y),
             Crossing::Bottom(..) => Point::new(x, y + 1),
             Crossing::Left(..) => Point::new(x - 1, y),
-            Crossing::Diagonal => Point::new(x + diagonal_dx, y + 1),
+            Crossing::Diagonal => Point::new(x - 1, y + 1),
         }
     }
 
-    /// Twice the inside area of an upper half pixel entered at `self` and left at `exit`, in 1/SIDE².
+    /// Twice the inside area of a pixel entered at `self` and left at `exit`, in 1/SIDE².
     #[inline(always)]
     fn upper_area(self, exit: Crossing) -> i32 {
         use Crossing::{Bottom, Diagonal, Left, Right, Top};
@@ -79,38 +77,6 @@ impl Crossing {
             (Top(.., a), Left(.., b)) => DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE - b),
             _ => unreachable!(
                 "the upper half enters through the top or right edge and leaves through the left or bottom"
-            ),
-        }
-    }
-
-    /// Twice the inside area of a lower half pixel entered at `self` and left at `exit`, in 1/SIDE².
-    #[inline(always)]
-    fn lower_area(self, exit: Crossing) -> i32 {
-        use Crossing::{Bottom, Diagonal, Left, Right, Top};
-        // Entering through the top-left corner, all the top edge is inside. Leaving through the bottom-right corner,
-        // none of the bottom edge is.
-        let entry = if let Diagonal = self {
-            Top(0, 0, SIDE)
-        } else {
-            self
-        };
-        let exit = if let Diagonal = exit {
-            Bottom(0, 0, 0)
-        } else {
-            exit
-        };
-        match (entry, exit) {
-            (Left(.., a), Right(.., b)) | (Top(.., a), Bottom(.., b)) => {
-                doubled_trapezoid_area(a, b)
-            }
-            // Only the top-right corner inside.
-            (Top(.., a), Right(.., b)) => doubled_triangle_area(a, b),
-            // All but the bottom-left corner inside.
-            (Left(.., a), Bottom(.., b)) => {
-                DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE - b)
-            }
-            _ => unreachable!(
-                "the lower half enters through the top or left edge and leaves through the bottom or right"
             ),
         }
     }
@@ -155,10 +121,11 @@ impl Cursor {
         )
     }
 
-    /// Upper half. The circle runs down and to the left, so it leaves each pixel through its left edge or its bottom
-    /// edge, and F at the pixel's bottom-left corner tells which. Moves to the next pixel, and breaks when that pixel's
-    /// top edge is at or below the center. A pixel entered from above is the innermost of its row.
-    fn step_upper(&mut self, entry: Crossing) -> (Step, ControlFlow<Crossing, Crossing>) {
+    /// One pixel of the top-left quarter, where the circle runs down and to the left, so it leaves each pixel through
+    /// its left edge or its bottom edge, and F at the pixel's bottom-left corner tells which. Moves to the next pixel
+    /// and returns the crossing to enter it, or `None` when that pixel's top edge is at or below the center. A pixel
+    /// entered from above is the innermost of its row.
+    fn step(&mut self, entry: Crossing) -> (Step, Option<Crossing>) {
         let (Point { x, y }, offset) = (self.point, self.center_offset);
         let (dx, dy) = (
             forward_difference(x, offset.x),
@@ -183,13 +150,8 @@ impl Cursor {
             Crossing::Bottom(bottom_right, bottom_left, inside(bottom_right, bottom_left))
         };
         let point = self.point;
-        self.point = exit.next_pixel(point, -1);
-        let next = exit.across();
-        let flow = if self.point.y >= offset.y {
-            Break(next)
-        } else {
-            Continue(next)
-        };
+        self.point = exit.next_pixel(point);
+        let next = (self.point.y < offset.y).then(|| exit.across());
         let coverage = coverage(entry.upper_area(exit));
         (
             Step {
@@ -197,62 +159,7 @@ impl Cursor {
                 coverage,
                 innermost,
             },
-            flow,
-        )
-    }
-
-    /// Lower half. The circle runs down and to the right, so it leaves each pixel through its bottom edge or its
-    /// right edge, and F at the pixel's bottom-right corner tells which. Breaks after the last pixel, which is next
-    /// to the vertical axis and leaves through its right edge. A pixel left downward is the innermost of its row.
-    fn step_lower(&mut self, entry: Crossing) -> (Step, ControlFlow<(), Crossing>) {
-        let (Point { x, y }, offset) = (self.point, self.center_offset);
-        let (dx, dy) = (
-            forward_difference(x, offset.x),
-            forward_difference(y, offset.y),
-        );
-        let bottom_right = match entry {
-            Crossing::Left(bottom_left, ..) => bottom_left + dx,
-            Crossing::Top(_, top_right, _) => top_right + dy,
-            Crossing::Diagonal => dx + dy, // entered at the top-left corner, where F is 0
-            Crossing::Right(..) | Crossing::Bottom(..) => unreachable!(),
-        };
-        let point = self.point;
-        let (exit, innermost) = if bottom_right < 0 {
-            let bottom_left = bottom_right - dx;
-            let bottom =
-                Crossing::Bottom(bottom_right, bottom_left, inside(bottom_right, bottom_left));
-            (bottom, true)
-        } else {
-            let top_right = bottom_right - dy;
-            let right = Crossing::Right(top_right, bottom_right, inside(top_right, bottom_right));
-            if x >= offset.x - 1 {
-                // The last pixel. Checked first: its bottom-right corner may be on the circle.
-                let coverage = coverage(entry.lower_area(right));
-                return (
-                    Step {
-                        point,
-                        coverage,
-                        innermost: true,
-                    },
-                    Break(()),
-                );
-            }
-            // Through the corner, as in the upper half.
-            if bottom_right == 0 {
-                (Crossing::Diagonal, true)
-            } else {
-                (right, false)
-            }
-        };
-        self.point = exit.next_pixel(point, 1);
-        let coverage = coverage(entry.lower_area(exit));
-        (
-            Step {
-                point,
-                coverage,
-                innermost,
-            },
-            Continue(exit.across()),
+            next,
         )
     }
 }
@@ -288,9 +195,9 @@ pub struct Step {
     pub innermost: bool,
 }
 
-/// Walks the left half of the boundary of a circle `diameter` pixels across, from the top pixel next to the vertical
-/// axis down to the bottom pixel next to it, and calls `visit` for each pixel. Pixels are relative to the center, as
-/// in `Cursor`. Coverage is 0 when the circle cuts a pixel too little to show.
+/// Walks the top-left quarter of the boundary of a circle `diameter` pixels across, from the top pixel next to the
+/// vertical axis down to the row at the center, and calls `visit` for each pixel. Pixels are relative to the center,
+/// as in `Cursor`. Coverage is 0 when the circle cuts a pixel too little to show.
 pub fn walk_it(diameter: i32, center_offset: Point, mut visit: impl FnMut(Step)) {
     assert!(
         (1..=1 << 15).contains(&diameter),
@@ -312,27 +219,17 @@ pub fn walk_it(diameter: i32, center_offset: Point, mut visit: impl FnMut(Step))
         return;
     }
 
-    let (mut cursor, mut entry) = Cursor::first(diameter, center_offset);
-    entry = loop {
-        let (step, flow) = cursor.step_upper(entry);
+    let (mut cursor, entry) = Cursor::first(diameter, center_offset);
+    let mut next = Some(entry);
+    while let Some(entry) = next {
+        let step;
+        (step, next) = cursor.step(entry);
         visit(step);
-        match flow {
-            Continue(next) => entry = next,
-            Break(next) => break next,
-        }
-    };
-    loop {
-        let (step, flow) = cursor.step_lower(entry);
-        visit(step);
-        match flow {
-            Continue(next) => entry = next,
-            Break(()) => return,
-        }
     }
 }
 
-/// Fills the disk of `circle`: the pixels the walk visits, their mirror images, and the full span between the
-/// innermost pixel of each row and its mirror image. Not clipped yet.
+/// Fills the disk of `circle`: the pixels the walk visits, their mirror images in the four quarters, and the full
+/// span between the innermost pixel of each row and its mirror image. Not clipped yet.
 pub fn fill(circle: &Circle, mut emit: impl FnMut(Coverage)) {
     let disk = Disk::grown(circle, 0); // in half pixels, so its radius is the diameter
     if disk.radius < 1 {
@@ -344,18 +241,26 @@ pub fn fill(circle: &Circle, mut emit: impl FnMut(Coverage)) {
 
     walk_it(disk.radius, center_offset, |step| {
         let (x, y) = (center_x + step.point.x, center_y + step.point.y);
-        let mirror = disk.mirror(x.into());
-        if step.innermost {
-            span(i32::from(x) + 1, mirror, y, no_clip, &mut emit);
-        }
-        if step.coverage > 0 {
-            emit(Coverage::Boundary(Point::new(x, y), step.coverage));
-            if mirror != i32::from(x) {
-                emit(Coverage::Boundary(
-                    Point::new(mirror as i16, y),
-                    step.coverage,
-                ));
+        let mirror_x = disk.mirror(x.into());
+        let mirror_y = (disk.center_y - i32::from(y) - 1) as i16; // like `Disk::mirror`, vertically
+        let mut row = |y: i16| {
+            if step.innermost {
+                span(i32::from(x) + 1, mirror_x, y, no_clip, &mut emit);
             }
+            if step.coverage > 0 {
+                emit(Coverage::Boundary(Point::new(x, y), step.coverage));
+                if mirror_x != i32::from(x) {
+                    emit(Coverage::Boundary(
+                        Point::new(mirror_x as i16, y),
+                        step.coverage,
+                    ));
+                }
+            }
+        };
+        row(y);
+        // The row through a pixel center is its own mirror image.
+        if mirror_y != y {
+            row(mirror_y);
         }
     });
 }
@@ -408,11 +313,7 @@ mod tests {
                 }
                 let (first, last) = (points[0], points[points.len() - 1]);
                 assert_eq!(first.x, center_offset.x - 1, "{context}: first pixel");
-                assert_eq!(
-                    last,
-                    Point::new(center_offset.x - 1, center_offset.y - 1 - first.y),
-                    "{context}: last pixel"
-                );
+                assert_eq!(last.y, center_offset.y - 1, "{context}: last pixel");
             }
         }
     }
