@@ -8,7 +8,6 @@ use yonder_graphics::prelude::*;
 use yonder_graphics::surface::{Footprint, PixelBuffer, Surface, Viewport};
 use yonder_raster::{Coverage, Filled, Rasterizable, Stroked, walk_fill};
 
-const SIDE: i16 = 390;
 const BAND: i16 = 16;
 
 /// Prints the time per call of `run`: the fastest of 5 batches of about 20 ms, the one least disturbed by the rest
@@ -63,13 +62,23 @@ impl Surface for Band<'_> {
     }
 }
 
+/// The 16-row bands of `screen`.
+fn bands(screen: BoundingBox) -> impl Iterator<Item = BoundingBox> {
+    let (width, height) = (screen.width(), screen.height());
+    (0..height).step_by(BAND as usize).map(move |top| {
+        BoundingBox::new(
+            Point::new(0, top),
+            Point::new(width, (top + BAND).min(height)),
+        )
+    })
+}
+
 /// Draws `item` on the whole screen, band by band.
-fn draw_in_bands<T>(pixels: &mut [Rgb565], item: &T)
+fn draw_in_bands<T>(screen: BoundingBox, pixels: &mut [Rgb565], item: &T)
 where
     T: for<'a> Drawable<Band<'a>>,
 {
-    for top in (0..SIDE).step_by(BAND as usize) {
-        let bounds = BoundingBox::new(Point::new(0, top), Point::new(SIDE, (top + BAND).min(SIDE)));
+    for bounds in bands(screen) {
         let pixels = &mut pixels[..bounds.width() as usize * bounds.height() as usize];
         item.draw(&mut Band { pixels, bounds });
     }
@@ -90,44 +99,60 @@ fn main() {
         });
     }
 
-    let circle = black_box(Circle::new(PointT2::new(195, 195, 1), 179));
-    let ring = Stroked {
-        shape: &circle,
-        width: 16,
-    };
-    let full = BoundingBox::new(Point::new(0, 0), Point::new(SIDE, SIDE));
-    time("rasterize 390x390 ring, full frame", || {
-        consume(&ring, full)
-    });
-    time("rasterize 390x390 ring, 16-row bands", || {
-        for top in (0..SIDE).step_by(BAND as usize) {
-            let band =
-                BoundingBox::new(Point::new(0, top), Point::new(SIDE, (top + BAND).min(SIDE)));
-            consume(&ring, band);
-        }
-    });
+    // The device's screen, and bigger ones where the per-call overhead of the benchmark matters less.
+    for (width, height) in [(390, 390), (1024, 1024), (3840, 2160)] {
+        let screen = BoundingBox::new(Point::new(0, 0), Point::new(width, height));
+        let size = format!("{width}x{height}");
+        // As on the device: a ring 16 px thick, its outer edge 8 px from the screen edge.
+        let radius = width.min(height) / 2 - 16;
+        let circle = black_box(Circle::new(
+            PointT2::new(width.into(), height.into(), 2),
+            radius,
+        ));
+        println!();
 
-    let mut row = [Rgb565::BLACK; SIDE as usize];
-    let color = Rgb565::new(21, 42, 9);
-    time("390-pixel row, fill", || {
-        Rgb565::blend_slice(black_box(&mut row[1..]), color.with_alpha(255))
-    });
-    time("390-pixel row, blend", || {
-        Rgb565::blend_slice(black_box(&mut row[1..]), color.with_alpha(128))
-    });
+        time(&format!("rasterize {size} disk, ChordWalk"), || {
+            consume(&Filled(&circle), screen)
+        });
+        time(&format!("rasterize {size} disk, walk"), || {
+            let mut sum = 0u32;
+            walk_fill(&circle, |item| sum = sum.wrapping_add(checksum(item)));
+            black_box(sum);
+        });
+        let ring = Stroked {
+            shape: &circle,
+            width: 16,
+        };
+        time(&format!("rasterize {size} ring, full frame"), || {
+            consume(&ring, screen)
+        });
+        time(&format!("rasterize {size} ring, 16-row bands"), || {
+            bands(screen).for_each(|band| consume(&ring, band))
+        });
 
-    let mut pixels = vec![Rgb565::BLACK; SIDE as usize * BAND as usize];
-    let red = Paint::solid(Rgb565::RED);
-    let disk = black_box(circle.with_style(Style::new().fill(red)));
-    time("draw 390x390 disk, opaque, bands", || {
-        draw_in_bands(&mut pixels, &disk)
-    });
-    let disk = black_box(circle.with_style(Style::new().fill(red.alpha(128))));
-    time("draw 390x390 disk, half transparent, bands", || {
-        draw_in_bands(&mut pixels, &disk)
-    });
-    let ring = black_box(circle.with_style(Style::new().stroke(Stroke::new(16, red))));
-    time("draw 390x390 ring, width 16, bands", || {
-        draw_in_bands(&mut pixels, &ring)
-    });
+        let mut row = vec![Rgb565::BLACK; width as usize];
+        let color = Rgb565::new(21, 42, 9);
+        time(&format!("{width}-pixel row, fill"), || {
+            Rgb565::blend_slice(black_box(&mut row[1..]), color.with_alpha(255))
+        });
+        time(&format!("{width}-pixel row, blend"), || {
+            Rgb565::blend_slice(black_box(&mut row[1..]), color.with_alpha(128))
+        });
+
+        let mut pixels = vec![Rgb565::BLACK; width as usize * BAND as usize];
+        let red = Paint::solid(Rgb565::RED);
+        let disk = black_box(circle.with_style(Style::new().fill(red)));
+        time(&format!("draw {size} disk, opaque, bands"), || {
+            draw_in_bands(screen, &mut pixels, &disk)
+        });
+        let disk = black_box(circle.with_style(Style::new().fill(red.alpha(128))));
+        time(
+            &format!("draw {size} disk, half transparent, bands"),
+            || draw_in_bands(screen, &mut pixels, &disk),
+        );
+        let ring = black_box(circle.with_style(Style::new().stroke(Stroke::new(16, red))));
+        time(&format!("draw {size} ring, width 16, bands"), || {
+            draw_in_bands(screen, &mut pixels, &ring)
+        });
+    }
 }
