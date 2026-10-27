@@ -42,7 +42,8 @@ macro_rules! named_colors {
 
 /// 16-bit color: 5 bits red, 6 bits green, 5 bits blue.
 #[derive(Clone, Copy, PartialEq, Hash)]
-pub struct Rgb565(u16);
+#[repr(transparent)] // the SIMD routines read it as a `u16`
+pub struct Rgb565(pub(crate) u16);
 
 impl Rgb565 {
     /// Takes channels at native depth: `r` and `b` in 0..32, `g` in 0..64.
@@ -73,17 +74,24 @@ impl Color for Rgb565 {
     fn blend_slice(dst: &mut [Self], src: WithAlpha<Self>) {
         match src.alpha {
             0 => {}
+            #[cfg(feature = "esp32s3-simd")]
+            u8::MAX => crate::simd::fill(dst, src.color),
+            #[cfg(not(feature = "esp32s3-simd"))]
             u8::MAX => dst.fill(src.color),
             alpha => {
                 // Spread the channels apart (G high, R and B low) so one multiply blends all three.
                 const MASK: u32 = 0x07e0_f81f;
                 let spread = |c: Rgb565| (u32::from(c.0) | (u32::from(c.0) << 16)) & MASK;
                 let a = (u32::from(alpha) + 4) >> 3; // 0..=32
-                let src = spread(src.color) * a;
-                for d in dst {
-                    let mixed = ((src + spread(*d) * (32 - a)) >> 5) & MASK;
+                let mixed_src = spread(src.color) * a;
+                let blend = |d: &mut Rgb565| {
+                    let mixed = ((mixed_src + spread(*d) * (32 - a)) >> 5) & MASK;
                     d.0 = (mixed | (mixed >> 16)) as u16;
-                }
+                };
+                #[cfg(feature = "esp32s3-simd")]
+                crate::simd::blend(dst, src.color, a, blend);
+                #[cfg(not(feature = "esp32s3-simd"))]
+                dst.iter_mut().for_each(blend);
             }
         }
     }

@@ -1,9 +1,13 @@
 #![no_std]
+// Inline assembly on Xtensa is still unstable.
+#![cfg_attr(feature = "esp32s3-simd", feature(asm_experimental_arch))]
 
 pub mod color;
 pub mod damage;
 pub mod draw;
 pub mod shapes;
+#[cfg(feature = "esp32s3-simd")]
+pub mod simd;
 pub mod style;
 pub mod surface;
 

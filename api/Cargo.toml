@@ -3,6 +3,10 @@ name = "yonder-graphics"
 version = "0.0.0"
 edition = "2024"
 
+[features]
+# 128-bit PIE fill and blend for `Rgb565`. Needs `simd::enable_pie()` at start-up.
+esp32s3-simd = []
+
 [dependencies]
 yonder-geometry.workspace = true
 yonder-raster.workspace = true
