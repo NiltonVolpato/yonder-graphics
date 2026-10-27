@@ -1,2 +1,2 @@
-mod circle;
+pub(crate) mod circle;
 mod rectangle;

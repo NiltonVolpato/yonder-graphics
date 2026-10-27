@@ -18,7 +18,7 @@ mod tests {
     use yonder_geometry::projective::PointT2;
     use yonder_geometry::screen::{BoundingBox, Point};
     use yonder_geometry::shapes::Circle;
-    use yonder_raster::{Coverage, Filled, Rasterizable, Stroked};
+    use yonder_raster::{Coverage, Filled, Rasterizable, Stroked, walk_fill};
 
     const ITERATIONS: u32 = 200;
 
@@ -85,6 +85,13 @@ mod tests {
         }
     }
 
+    /// The walk's fill, unclipped: the benchmark circles fit the screen.
+    fn consume_walk(circle: &Circle) -> u32 {
+        let mut sum = 0u32;
+        walk_fill(circle, |item| sum = sum.wrapping_add(checksum(item)));
+        sum
+    }
+
     fn time(label: &str, size: i16, mut run: impl FnMut() -> u32) {
         let start = Instant::now();
         let mut sink = 0u32;
@@ -114,6 +121,9 @@ mod tests {
             time("fill, lattice center, radius", radius, || {
                 consume(&Filled(&circle), screen)
             });
+            time("walk fill, lattice center, radius", radius, || {
+                consume_walk(&circle)
+            });
         }
         for radius in [4, 16, 64, 110] {
             let radius = black_box(radius);
@@ -129,6 +139,9 @@ mod tests {
             let circle = black_box(pixel_center(radius));
             time("fill, pixel center, radius", radius, || {
                 consume(&Filled(&circle), screen)
+            });
+            time("walk fill, pixel center, radius", radius, || {
+                consume_walk(&circle)
             });
         }
         for width in [1, 8] {

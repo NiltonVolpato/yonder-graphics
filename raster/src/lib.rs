@@ -5,6 +5,10 @@ extern crate std;
 
 mod shapes;
 
+/// The walk's disk fill, exported to benchmark it next to `Filled<Circle>` until one replaces the other.
+#[doc(hidden)]
+pub use shapes::circle::the_walk::fill as walk_fill;
+
 use yonder_geometry::screen::{BoundingBox, Point};
 
 pub enum Coverage {

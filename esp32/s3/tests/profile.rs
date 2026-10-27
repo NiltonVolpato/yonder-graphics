@@ -16,7 +16,7 @@ mod tests {
     use yonder_geometry::projective::PointT2;
     use yonder_geometry::screen::{BoundingBox, Point};
     use yonder_geometry::shapes::Circle;
-    use yonder_raster::{Coverage, Rasterizable, Stroked};
+    use yonder_raster::{Coverage, Rasterizable, Stroked, walk_fill};
 
     #[init]
     fn init() -> TIMG1<'static> {
@@ -45,6 +45,23 @@ mod tests {
         s3::profiler::start(timg1);
         for _ in 0..400 {
             ring.rasterize(screen, |item| {
+                black_box(match item {
+                    Coverage::Boundary(position, coverage) => (position.x, coverage),
+                    Coverage::Partial(bounds, coverage) => (bounds.width(), coverage),
+                    Coverage::Interior(bounds) => (bounds.width(), 255),
+                });
+            });
+        }
+        s3::profiler::stop();
+    }
+
+    /// The walk's fill of a radius 110 disk, about 5 s of it.
+    #[test]
+    fn walk_fill_disk(timg1: TIMG1<'static>) {
+        let circle = black_box(Circle::new(PointT2::new(160, 120, 1), 110));
+        s3::profiler::start(timg1);
+        for _ in 0..15_000 {
+            walk_fill(&circle, |item| {
                 black_box(match item {
                     Coverage::Boundary(position, coverage) => (position.x, coverage),
                     Coverage::Partial(bounds, coverage) => (bounds.width(), coverage),
