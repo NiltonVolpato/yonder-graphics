@@ -90,8 +90,9 @@ impl Hasher for TileHasher {
 /// tiles' hashes and paints nothing. A tile is damaged when its hash differs from the
 /// previous frame's.
 pub struct DamageGrid<C, const COLUMNS: usize, const ROWS: usize> {
-    current: [[u16; COLUMNS]; ROWS],
-    previous: [[u16; COLUMNS]; ROWS],
+    /// This frame's hashes and the previous frame's, alternating: `hashes[current]` is this frame's.
+    hashes: [[[u16; COLUMNS]; ROWS]; 2],
+    current: usize,
     color: PhantomData<C>,
 }
 
@@ -99,20 +100,21 @@ impl<C, const COLUMNS: usize, const ROWS: usize> DamageGrid<C, COLUMNS, ROWS> {
     /// A grid whose first frame damages every tile.
     pub const fn new() -> Self {
         Self {
-            current: [[0; COLUMNS]; ROWS],
-            previous: [[u16::MAX; COLUMNS]; ROWS],
+            hashes: [[[0; COLUMNS]; ROWS], [[u16::MAX; COLUMNS]; ROWS]],
+            current: 0,
             color: PhantomData,
         }
     }
 
-    /// Ends the frame: its hashes become the previous ones.
+    /// Ends the frame: its hashes become the previous ones, and the older ones are cleared
+    /// for the next frame.
     pub fn next_frame(&mut self) {
-        self.previous = self.current;
-        self.current = [[0; COLUMNS]; ROWS];
+        self.current ^= 1;
+        self.hashes[self.current] = [[0; COLUMNS]; ROWS];
     }
 
     pub fn is_damaged(&self, column: usize, row: usize) -> bool {
-        self.current[row][column] != self.previous[row][column]
+        self.hashes[0][row][column] != self.hashes[1][row][column]
     }
 }
 
@@ -167,10 +169,14 @@ impl<C: Color + 'static, const COLUMNS: usize, const ROWS: usize> Surface
         let mut hasher = TileHasher::new();
         item.hash_paint(&mut hasher);
         let paint = hasher.0;
+        let hashes = &mut self.hashes[self.current];
+        // Indexing beats iterating here: shapes are mostly a few tiles wide, and slicing
+        // each row costs more than it saves (measured on the ESP32-S3 with 200 widgets).
+        #[allow(clippy::needless_range_loop)]
         for row in row_start..row_end {
             let row_inside = interior.2 <= row as i16 && (row as i16) < interior.3;
             for column in column_start..column_end {
-                let tile = &mut self.current[row][column];
+                let tile = &mut hashes[row][column];
                 *tile = if row_inside && interior.0 <= column as i16 && (column as i16) < interior.1
                 {
                     // Nothing below shows through an opaque paint: start over from it.
