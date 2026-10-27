@@ -136,11 +136,16 @@ api/        → geometry, raster
   - `hash_tile(tile)`: everything that affects the tile's pixels. For circles and rectangles that is the geometry and the style. Arcs, paths and text can later hash only their part of the tile.
 - Tiles inside the interior get an assignment: an opaque paint resets the hash to the paint, a translucent one is combined. Other tiles in the extent combine `hash_tile`. Tiles outside are not visited.
 - Tiles between the interior box and the edge count as edge tiles, so moving a circle also damages some tiles that stay fully inside it. That is correct, only more damage than necessary. Exact classification would cost four evaluations per tile.
+- Tile hashes are 16 bits, folded with a rotate-multiply-xor step from `yonder-damage` on `main` (`damage::TileHasher`). A change goes unnoticed with a probability of about 2⁻¹⁶ per tile per frame.
+- `DamageGrid` computes `hash_tile` once per drawable and folds it into every edge tile. That holds while no `Footprint` uses the tile argument (circles and rectangles don't); arcs and text will need one call per tile.
 - Hashing uses `core::hash::Hash`, so colors, `WithAlpha`, `Paint`, `Stroke`, `Style` and shapes implement it. `Circle` hashes its `[x, y, w, r]` representation. An equal circle at a different scale hashes differently, which can only cause extra damage.
 - The surface decides, per drawable, whether to skip it, draw it clipped, or draw it unclipped. This uses the drawable's extent and interior, which is why it takes the drawable itself, not only a box.
 - Users make their own drawables by grouping primitives: they implement `Drawable<S>` and draw the parts. Each part calls `viewport` itself, so the damage grid sees the parts and groups need nothing more.
 
 ## Open questions
+
+- How shapes, the damage grid and viewports interact. The grid works like a coarse screen, but shapes should take shortcuts when updating it, and routing both through `Surface::viewport` is awkward. Maybe an intermediary (a controller) connects a shape to the damage grid or to a viewport as needed.
+- Hashes outside the grid: a background that fills the screen could be one hash instead of one per tile. Generalized, the grid could have several resolutions, so a big object hashes a big block.
 
 - Text in the damage grid. Per tile, hash the shaped clusters whose ink bounds touch the tile, with their positions, plus font, size and color. Not implemented yet.
 - Antialiasing method. Zingl's antialiasing is not good enough. Marching squares is a candidate.

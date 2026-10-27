@@ -8,7 +8,7 @@ test *args:
 
 # Runs the circle benchmark on the device.
 bench:
-    cargo test --release --test circles
+    cargo test --release --test circles --test damage
 
 # Flashes and runs the main binary.
 run:

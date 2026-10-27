@@ -73,7 +73,10 @@ where
     let mut out = Coverage::new();
     for (index, pixel) in frame.pixels.iter().enumerate() {
         if pixel.r() > 0 {
-            let (x, y) = (index as i32 % i32::from(side), index as i32 / i32::from(side));
+            let (x, y) = (
+                index as i32 % i32::from(side),
+                index as i32 / i32::from(side),
+            );
             out.insert((x, y), pixel.r());
         }
     }
@@ -144,7 +147,11 @@ impl Canvas {
         for j in 0..z {
             for i in 0..z {
                 let grid = i == 0 || j == 0;
-                let color = if grid { color.map(|c| c / 2 + 40) } else { color };
+                let color = if grid {
+                    color.map(|c| c / 2 + 40)
+                } else {
+                    color
+                };
                 let px = (origin.0 + x as usize) * z + i;
                 let py = (origin.1 + y as usize) * z + j;
                 self.data[py * self.width + px] = color;
@@ -245,7 +252,9 @@ pub fn compare(path: &Path) {
     let height = sides.iter().sum::<usize>() + radii.len() - 1;
     let mut canvas = Canvas::new(width, height, ZOOM);
     let mut top = 0;
-    println!("radius | mean/max |ours − exact| | mean/max |Zingl − exact| | mean/max |ours − Zingl|");
+    println!(
+        "radius | mean/max |ours − exact| | mean/max |Zingl − exact| | mean/max |ours − Zingl|"
+    );
     for (&r, &side) in radii.iter().zip(&sides) {
         let c = (side / 2) as i16;
         let ours = ours(side as i16, c, c, r);
@@ -258,7 +267,12 @@ pub fn compare(path: &Path) {
         println!(
             "{r:>6} | {ours_mean:>6.2} / {ours_max:>3} | {zingl_mean:>6.2} / {zingl_max:>3} | {both_mean:>6.2} / {both_max:>3}"
         );
-        let ink = |coverage: &Coverage| coverage.values().map(|&c| f64::from(c) / 255.0).sum::<f64>();
+        let ink = |coverage: &Coverage| {
+            coverage
+                .values()
+                .map(|&c| f64::from(c) / 255.0)
+                .sum::<f64>()
+        };
         println!(
             "       ink in px²: ours {:.2}, Zingl {:.2}, exact {:.2} (2πr = {:.2})",
             ink(&ours),
@@ -304,7 +318,11 @@ pub fn invisible_cells(path: &Path) {
     const ZOOM: usize = 14;
     const SIDE: usize = 25;
     let sizes = 1..=10i16;
-    let kinds = ["lattice point, radius r", "pixel center, radius r", "pixel center, radius r − ½"];
+    let kinds = [
+        "lattice point, radius r",
+        "pixel center, radius r",
+        "pixel center, radius r − ½",
+    ];
     let mut canvas = Canvas::new(sizes.len() * (SIDE + 1), kinds.len() * (SIDE + 1), ZOOM);
     println!("cells with every corner outside but some coverage (exact, then ours):");
     for (row, kind) in kinds.iter().enumerate() {
@@ -370,7 +388,10 @@ pub fn invisible_cells(path: &Path) {
                 report += &format!(" r={r}: {invisible:?}");
             }
         }
-        println!("  {kind}:{}", if report.is_empty() { " none" } else { &report });
+        println!(
+            "  {kind}:{}",
+            if report.is_empty() { " none" } else { &report }
+        );
     }
     canvas.save(path).expect("write png");
 }

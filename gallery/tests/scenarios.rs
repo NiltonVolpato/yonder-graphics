@@ -1,13 +1,11 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 
 use yonder_gallery::{
     BACKGROUND, Band, Button, Dark, Framebuffer, WithTheme, basic, buttons, circles,
     render_in_bands, strokes,
 };
+use yonder_graphics::damage::DamageGrid;
 use yonder_graphics::prelude::*;
-use yonder_graphics::surface::{Footprint, PixelBuffer, Surface, Viewport};
 
 fn same(a: &[Rgb888], b: &[Rgb888], width: i16) -> Result<(), String> {
     match a.iter().zip(b).position(|(p, q)| p != q) {
@@ -92,105 +90,59 @@ fn mixed_drawables_behind_dyn() {
     assert!(frame.pixels[0] == Rgb888::RED && frame.pixels[11] == Rgb888::BLUE);
 }
 
-/// A damage pass: a hash per tile of everything drawn into it, in order. It draws nothing.
-struct DamageGrid {
-    tile: i16,
-    columns: i16,
-    hashes: Vec<u64>,
-    interiors: usize,
-    tile_hashes: usize,
-}
-
-impl DamageGrid {
-    fn new(columns: i16, rows: i16, tile: i16) -> Self {
-        Self {
-            tile,
-            columns,
-            hashes: vec![0; (columns * rows) as usize],
-            interiors: 0,
-            tile_hashes: 0,
-        }
-    }
-
-    fn tile(&self, i: usize) -> BoundingBox {
-        let (x, y) = (
-            (i % self.columns as usize) as i16 * self.tile,
-            (i / self.columns as usize) as i16 * self.tile,
-        );
-        BoundingBox::new(Point::new(x, y), Point::new(x + self.tile, y + self.tile))
-    }
-}
-
-impl Surface for DamageGrid {
-    type Color = Rgb888;
-
-    fn viewport(&mut self, item: &impl Footprint) -> Option<impl PixelBuffer<Color = Rgb888>> {
-        let (extent, interior) = (item.extent(), item.interior());
-        self.interiors += 1;
-        for i in 0..self.hashes.len() {
-            let tile = self.tile(i);
-            if tile.intersection(&extent).is_none() {
-                continue;
-            }
-            let mut h = DefaultHasher::new();
-            match interior {
-                // Nothing below shows through: start over from this paint.
-                Some((inside, true)) if inside.contains(&tile) => item.hash_paint(&mut h),
-                Some((inside, false)) if inside.contains(&tile) => {
-                    self.hashes[i].hash(&mut h);
-                    item.hash_paint(&mut h);
-                }
-                _ => {
-                    self.hashes[i].hash(&mut h);
-                    item.hash_tile(&tile, &mut h);
-                    self.tile_hashes += 1;
-                }
-            }
-            self.hashes[i] = h.finish();
-        }
-        None::<Viewport<'_, Rgb888>>
-    }
-}
-
-fn damaged(a: &DamageGrid, b: &DamageGrid) -> Vec<usize> {
-    (0..a.hashes.len())
-        .filter(|&i| a.hashes[i] != b.hashes[i])
-        .collect()
-}
+type Grid = DamageGrid<Rgb888, 13, 13>;
 
 /// A background card, then a circle over it.
-fn frame(card: Paint<Rgb888>, circle: Paint<Rgb888>, center_x: i32) -> DamageGrid {
-    let mut grid = DamageGrid::new(13, 13, 16);
-    Rectangle::new(Point::new(0, 0), Point::new(208, 208))
-        .with_style(Style::new().fill(card))
-        .draw(&mut grid);
-    Circle::new(PointT2::new(center_x, 100, 1), 50)
-        .with_style(Style::new().fill(circle))
-        .draw(&mut grid);
-    grid
+fn frame(card: Paint<Rgb888>, circle: Paint<Rgb888>, center_x: i32) -> impl Fn(&mut Grid) {
+    move |grid| {
+        Rectangle::new(Point::new(0, 0), Point::new(208, 208))
+            .with_style(Style::new().fill(card))
+            .draw(grid);
+        Circle::new(PointT2::new(center_x, 100, 1), 50)
+            .with_style(Style::new().fill(circle))
+            .draw(grid);
+    }
+}
+
+/// The tiles damaged going from one frame to the next.
+fn damaged(first: impl Fn(&mut Grid), second: impl Fn(&mut Grid)) -> Vec<(usize, usize)> {
+    let mut grid = Grid::new();
+    first(&mut grid);
+    grid.next_frame();
+    second(&mut grid);
+    let tiles = (0..13).flat_map(|row| (0..13).map(move |column| (column, row)));
+    tiles
+        .filter(|&(column, row)| grid.is_damaged(column, row))
+        .collect()
 }
 
 #[test]
 fn damage_grid_hashes_color_and_position() {
     let white = Paint::solid(Rgb888::WHITE);
-    let base = frame(Paint::solid(BACKGROUND), white, 100);
+    let base = || frame(Paint::solid(BACKGROUND), white, 100);
     assert!(
-        damaged(&base, &frame(Paint::solid(BACKGROUND), white, 100)).is_empty(),
+        damaged(base(), base()).is_empty(),
         "same frame, same hashes"
     );
 
     // A color change damages every tile the circle touches, and nothing else.
     let recolored = damaged(
-        &base,
-        &frame(Paint::solid(BACKGROUND), Paint::solid(Rgb888::RED), 100),
+        base(),
+        frame(Paint::solid(BACKGROUND), Paint::solid(Rgb888::RED), 100),
     );
-    let touched: Vec<usize> = (0..base.hashes.len())
-        .filter(|&i| base.tile(i).intersection(&circle_extent(100)).is_some())
+    let extent = Circle::new(PointT2::new(100, 100, 1), 50).bounds();
+    let touched: Vec<(usize, usize)> = (0..13)
+        .flat_map(|row| (0..13).map(move |column| (column, row)))
+        .filter(|&(column, row)| {
+            let (x, y) = (column as i16 * 16, row as i16 * 16);
+            let tile = BoundingBox::new(Point::new(x, y), Point::new(x + 16, y + 16));
+            tile.intersection(&extent).is_some()
+        })
         .collect();
     assert_eq!(recolored, touched);
 
     // Moving it damages only the tiles its edge crosses, not those inside the inscribed square.
-    let moved = damaged(&base, &frame(Paint::solid(BACKGROUND), white, 101));
+    let moved = damaged(base(), frame(Paint::solid(BACKGROUND), white, 101));
     assert!(
         !moved.is_empty() && moved.len() < touched.len(),
         "{} of {}",
@@ -199,31 +151,13 @@ fn damage_grid_hashes_color_and_position() {
     );
 
     // An opaque circle hides the card below it inside its interior.
-    let card_changed = damaged(&base, &frame(Paint::solid(Rgb888::BLUE), white, 100));
-    assert!(card_changed.len() < base.hashes.len());
+    let card_changed = damaged(base(), frame(Paint::solid(Rgb888::BLUE), white, 100));
+    assert!(card_changed.len() < 13 * 13);
 
     // A translucent one doesn't.
     let see_through = |card| frame(Paint::solid(card), white.alpha(200), 100);
     assert_eq!(
-        damaged(&see_through(BACKGROUND), &see_through(Rgb888::BLUE)).len(),
-        base.hashes.len()
+        damaged(see_through(BACKGROUND), see_through(Rgb888::BLUE)).len(),
+        13 * 13
     );
-}
-
-fn circle_extent(center_x: i32) -> BoundingBox {
-    Circle::new(PointT2::new(center_x, 100, 1), 50).bounds()
-}
-
-#[test]
-fn damage_grid_cost_of_one_circle() {
-    let mut grid = DamageGrid::new(13, 13, 16);
-    Circle::new(PointT2::new(100, 100, 1), 50)
-        .with_style(Style::new().fill(Paint::solid(Rgb888::WHITE)))
-        .draw(&mut grid);
-    // One `interior` call per drawable; edge tiles only hash parameters.
-    println!(
-        "{} interior call, {} edge tiles hashed",
-        grid.interiors, grid.tile_hashes
-    );
-    assert_eq!(grid.interiors, 1);
 }

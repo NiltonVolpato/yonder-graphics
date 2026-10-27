@@ -21,6 +21,10 @@ name    = "circles"
 harness = false
 name    = "profile"
 
+[[test]]
+harness = false
+name    = "damage"
+
 [lib]
 test = false
 
@@ -49,6 +53,7 @@ static_cell      = "2.1.1"
 
 [dev-dependencies]
 yonder-geometry = { path = "../../geometry" }
+yonder-graphics = { path = "../../api" }
 yonder-raster   = { path = "../../raster" }
 embedded-test = { version = "0.7.1", features = [
   "defmt",

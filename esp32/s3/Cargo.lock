@@ -1475,6 +1475,7 @@ dependencies = [
  "space-saving",
  "static_cell",
  "yonder-geometry",
+ "yonder-graphics",
  "yonder-raster",
 ]
 
@@ -1902,6 +1903,14 @@ dependencies = [
 [[package]]
 name = "yonder-geometry"
 version = "0.0.0"
+
+[[package]]
+name = "yonder-graphics"
+version = "0.0.0"
+dependencies = [
+ "yonder-geometry",
+ "yonder-raster",
+]
 
 [[package]]
 name = "yonder-raster"

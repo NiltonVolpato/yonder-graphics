@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod color;
+pub mod damage;
 pub mod draw;
 pub mod shapes;
 pub mod style;
