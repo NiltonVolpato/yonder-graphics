@@ -205,6 +205,27 @@ impl Line {
     fn inside(&self, x: i32) -> bool {
         self.first_inside <= x && x <= self.last_inside
     }
+
+    /// How the top or bottom edge of cell `x`, left of the center, lies on this line.
+    #[inline(always)]
+    fn edge(&self, x: i32) -> Edge {
+        if x + 1 < self.first_inside {
+            Edge::Outside
+        } else if x + 1 == self.first_inside {
+            Edge::Crossed
+        } else {
+            Edge::Inside
+        }
+    }
+}
+
+/// A cell's top or bottom edge: both corners outside, the chord's left end between them,
+/// or both inside. Left of the center a line is outside, then inside, so there's no other.
+#[derive(Clone, Copy)]
+enum Edge {
+    Outside,
+    Crossed,
+    Inside,
 }
 
 fn rasterize(outer: Disk, inner: Option<Disk>, clip: BoundingBox, emit: &mut impl FnMut(Coverage)) {
@@ -377,23 +398,36 @@ impl<'a> EdgeCells<'a> {
         // One column right: F(x + 1, y) = F(x, y) + 4 · offset_x + 4.
         self.top_value += 4 * self.offset_x + 4;
         self.offset_x += 2;
-        let right_crossing = self.vertical_crossing(x + 1, self.top_value);
-        let inside = [
-            self.top.inside(x),
-            self.top.inside(x + 1),
-            self.bottom.inside(x + 1),
-            self.bottom.inside(x),
-        ];
-        // Each from its edge's first corner, going around the cell. A line's crossing is
-        // measured from its left point, a column's from its top.
-        let crossings = [
-            self.top.crossing,
-            right_crossing,
-            SIDE - self.bottom.crossing,
-            SIDE - self.left_crossing,
-        ];
-        self.left_crossing = right_crossing;
-        cell_area(inside, crossings)
+        // Where the four edges cross zero: the lines from their left corner, the columns
+        // from their top corner. Only the crossed edges' values are used.
+        let (top, bottom) = (self.top.crossing, self.bottom.crossing);
+        let (left, right) = (
+            self.left_crossing,
+            self.vertical_crossing(x + 1, self.top_value),
+        );
+        self.left_crossing = right;
+        let doubled_area = match (self.top.edge(x), self.bottom.edge(x)) {
+            // The bottom-right corner inside.
+            (Edge::Outside, Edge::Crossed) => doubled_triangle_area(SIDE - bottom, SIDE - right),
+            // The bottom corners inside.
+            (Edge::Outside, Edge::Inside) => doubled_trapezoid_area(SIDE - left, SIDE - right),
+            // The top-right corner inside.
+            (Edge::Crossed, Edge::Outside) => doubled_triangle_area(SIDE - top, right),
+            // The right corners inside.
+            (Edge::Crossed, Edge::Crossed) => doubled_trapezoid_area(SIDE - top, SIDE - bottom),
+            // All but the top-left corner inside.
+            (Edge::Crossed, Edge::Inside) => DOUBLED_FULL - doubled_triangle_area(top, left),
+            // The top corners inside.
+            (Edge::Inside, Edge::Outside) => doubled_trapezoid_area(left, right),
+            // All but the bottom-left corner inside.
+            (Edge::Inside, Edge::Crossed) => {
+                DOUBLED_FULL - doubled_triangle_area(bottom, SIDE - left)
+            }
+            (Edge::Outside, Edge::Outside) | (Edge::Inside, Edge::Inside) => {
+                unreachable!("an edge cell has corners inside and outside")
+            }
+        };
+        doubled_area / 2
     }
 }
 
@@ -404,47 +438,8 @@ fn crossing(from: i32, to: i32) -> i32 {
     round_div(from * SIDE, from - to)
 }
 
-/// The inside area of a cell, in 1/65536 pixel. `inside` says which corners are inside,
-/// and `crossings` where each edge crosses zero, as a distance from the edge's first
-/// corner, for corners top-left, top-right, bottom-right, bottom-left. Only crossings of
-/// edges with one corner inside are read.
-#[inline(always)]
-fn cell_area(inside: [bool; 4], crossings: [i32; 4]) -> i32 {
-    // The triangle at `corner`: its legs run along the corner's two edges to the crossings.
-    let triangle = |corner: usize| {
-        doubled_triangle_area(crossings[corner], SIDE - crossings[(corner + 3) % 4])
-    };
-    // The trapezoid where `corner` and the next corner are inside: its parallel sides run
-    // from each of them along its other edge to the crossing.
-    let trapezoid = |corner: usize| {
-        doubled_trapezoid_area(
-            SIDE - crossings[(corner + 3) % 4],
-            crossings[(corner + 1) % 4],
-        )
-    };
-    const DOUBLED_FULL: i32 = 2 * FULL;
-    let doubled_area = match inside {
-        [false, false, false, false] => 0,
-        [true, true, true, true] => DOUBLED_FULL,
-        [true, false, false, false] => triangle(0),
-        [false, true, false, false] => triangle(1),
-        [false, false, true, false] => triangle(2),
-        [false, false, false, true] => triangle(3),
-        [false, true, true, true] => DOUBLED_FULL - triangle(0),
-        [true, false, true, true] => DOUBLED_FULL - triangle(1),
-        [true, true, false, true] => DOUBLED_FULL - triangle(2),
-        [true, true, true, false] => DOUBLED_FULL - triangle(3),
-        [true, true, false, false] => trapezoid(0),
-        [false, true, true, false] => trapezoid(1),
-        [false, false, true, true] => trapezoid(2),
-        [true, false, false, true] => trapezoid(3),
-        // Two opposite corners inside needs a disk smaller than a pixel.
-        [true, false, true, false] | [false, true, false, true] => {
-            unreachable!("only a disk smaller than a pixel has opposite corners inside")
-        }
-    };
-    doubled_area / 2
-}
+/// A whole cell's area, doubled.
+const DOUBLED_FULL: i32 = 2 * FULL;
 
 /// Twice the area of a right triangle with legs `leg` and `other_leg`, in 1/SIDE².
 /// Doubled, it stays an integer: the same value as the shoelace formula.
