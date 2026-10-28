@@ -42,8 +42,6 @@ fn inside(f_inside: i32, edge: i32) -> i32 {
 #[derive(Clone, Copy)]
 struct Cursor {
     point: (i32, i32),
-    dx: i32,
-    dy: i32,
     /// F at the pixel's bottom-left corner. The sign of this value determines whether the circle exits Left (< 0),
     /// Bottom (> 0), or diagonally through the corner (== 0).
     bottom_left: i32,
@@ -56,24 +54,32 @@ struct Cursor {
 }
 
 impl Cursor {
+    #[inline(always)]
+    fn dx(&self) -> i32 {
+        (self.point.0 + 1) << 2
+    }
+
+    #[inline(always)]
+    fn dy(&self) -> i32 {
+        (self.point.1 + 1) << 2
+    }
+
     /// The first pixel, in the top row, on the vertical axis or just left of it, and the crossing where the circle
     /// enters it: its right edge. The only place that multiplies.
-    fn first(diameter: i32, offset_x: i32, offset_y: i32) -> Self {
-        let x = offset_x - 2;
-        let y_pix = -((diameter + 1 - offset_y) / 2);
-        let y = 2 * y_pix - offset_y;
-        let right = x + 2;
-        let top = y;
-        let top_right = right * right + top * top - diameter * diameter;
-        let dy = (top + 1) << 2;
-        let bottom_right = top_right + dy;
+    fn first(diameter: i32, offset_x: bool, offset_y: bool) -> Self {
+        let x = if offset_x { -1 } else { -2 };
+        let y = -diameter - i32::from((diameter % 2 != 0) ^ offset_y);
+
         let dx = (x + 1) << 2;
+        let dy = (y + 1) << 2;
+
+        let top_right = y * y - diameter * diameter + i32::from(offset_x);
+        let bottom_right = top_right + dy;
         let bottom_left = bottom_right - dx;
         let edge_inside = inside(bottom_right, dy);
+
         Self {
             point: (x, y),
-            dx,
-            dy,
             bottom_left,
             edge_inside,
             innermost: false,
@@ -87,7 +93,7 @@ impl Cursor {
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     #[cfg_attr(feature = "no-inline", inline(never))]
     fn step(&mut self) -> Option<Step> {
-        if self.dy > 0 {
+        if self.point.1 >= 0 {
             return None;
         }
 
@@ -95,20 +101,19 @@ impl Cursor {
         let innermost = self.innermost;
 
         let coverage = if self.bottom_left < 0 {
-            let b = inside(self.bottom_left, self.dy);
+            let b = inside(self.bottom_left, self.dy());
             let cov = if self.from_top {
                 inverted_triangle_coverage(SIDE - self.edge_inside, SIDE - b)
             } else {
                 trapezoid_coverage(self.edge_inside, b)
             };
             self.point.0 -= 2;
-            self.dx -= 8;
-            self.bottom_left -= self.dx;
+            self.bottom_left -= self.dx();
             self.innermost = false;
             self.from_top = false;
             self.edge_inside = b;
             cov
-        } else if self.bottom_left == 0 && self.dy != -4 {
+        } else if self.bottom_left == 0 && self.point.1 != -2 {
             // The bottom-left corner is exactly on the circle, and not on the horizontal axis. The pixels on the
             // other sides of the corner are covered completely or not at all, so go through the corner.
             // (On the horizontal axis the circle is vertical, and the next pixel down is cut.)
@@ -119,23 +124,21 @@ impl Cursor {
             };
             self.point.0 -= 2;
             self.point.1 += 2;
-            self.dx -= 8;
-            self.dy += 8;
-            self.bottom_left = self.dy - self.dx;
+            self.bottom_left = self.dy() - self.dx();
             self.innermost = true;
             self.from_top = false;
             self.edge_inside = SIDE;
             cov
         } else {
-            let b = inside(self.bottom_left + self.dx, self.dx);
+            let dx = self.dx();
+            let b = inside(self.bottom_left + dx, dx);
             let cov = if self.from_top {
                 trapezoid_coverage(self.edge_inside, b)
             } else {
                 triangle_coverage(self.edge_inside, b)
             };
             self.point.1 += 2;
-            self.dy += 8;
-            self.bottom_left += self.dy;
+            self.bottom_left += self.dy();
             self.innermost = true;
             self.from_top = true;
             self.edge_inside = b;
@@ -162,15 +165,15 @@ pub struct Step {
 /// Walks the top-left quarter of the boundary of a circle `diameter` pixels across, from the top pixel next to the
 /// vertical axis down to the row at the center, and calls `visit` for each pixel. Pixels are in doubled coordinates
 /// relative to the center. Coverage is 0 when the circle cuts a pixel too little to show.
-pub fn walk_it(diameter: i32, (offset_x, offset_y): (i32, i32), mut visit: impl FnMut(Step)) {
+pub fn walk_it(diameter: i32, (offset_x, offset_y): (bool, bool), mut visit: impl FnMut(Step)) {
     assert!(
         (1..=1 << 15).contains(&diameter),
         "diameter must be in 1..=32768"
     ); // keeps F in an i32
 
-    if diameter == 1 && (offset_x, offset_y) != (0, 0) {
+    if diameter == 1 && (offset_x || offset_y) {
         // No corner is inside the circle, so no edge is crossed.
-        if (offset_x, offset_y) == (1, 1) {
+        if offset_x && offset_y {
             // One pixel with the whole circle inside it.
             const SINGLE_PIXEL_COVERAGE: u8 = ((SINGLE_PIXEL_AREA * 255 + FULL / 2) >> 16) as u8;
             visit(Step {
@@ -198,11 +201,14 @@ pub fn fill(circle: &Circle, mut emit: impl FnMut(Coverage)) {
         return;
     }
     let (center_x, center_y) = (disk.center_x, disk.center_y);
-    let (offset_x, offset_y) = (center_x & 1, center_y & 1);
+    let (offset_x, offset_y) = (center_x & 1 == 1, center_y & 1 == 1);
     let no_clip = (i32::MIN, i32::MAX);
 
     walk_it(disk.radius, (offset_x, offset_y), |step| {
-        let (x, y) = ((center_x + step.point.0) >> 1, (center_y + step.point.1) >> 1);
+        let (x, y) = (
+            (center_x + step.point.0) >> 1,
+            (center_y + step.point.1) >> 1,
+        );
         let mirror_x = (center_x - step.point.0 - 2) >> 1;
         let mirror_y = (center_y - step.point.1 - 2) >> 1;
         let mut row = |y: i32| {
@@ -254,7 +260,9 @@ mod tests {
                 // F at corner (x, y) from scratch:
                 let f = |x: i32, y: i32| x * x + y * y - diameter * diameter;
                 let mut points = Vec::new();
-                walk_it(diameter, (offset_x, offset_y), |step| points.push(step.point));
+                walk_it(diameter, (offset_x == 1, offset_y == 1), |step| {
+                    points.push(step.point)
+                });
                 let context = format!("diameter {diameter}, offset ({offset_x}, {offset_y})");
 
                 for &(x, y) in &points {
@@ -275,16 +283,8 @@ mod tests {
                     );
                 }
                 let (first, last) = (points[0], points[points.len() - 1]);
-                assert_eq!(
-                    first.0,
-                    offset_x - 2,
-                    "{context}: first pixel"
-                );
-                assert_eq!(
-                    last.1,
-                    offset_y - 2,
-                    "{context}: last pixel"
-                );
+                assert_eq!(first.0, offset_x - 2, "{context}: first pixel");
+                assert_eq!(last.1, offset_y - 2, "{context}: last pixel");
             }
         }
     }
