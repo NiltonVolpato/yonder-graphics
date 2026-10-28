@@ -54,36 +54,6 @@ impl Crossing {
             Crossing::Diagonal => Point::new(x - 1, y + 1),
         }
     }
-
-    /// Twice the inside area of a pixel entered at `self` and left at `exit`, in 1/SIDE².
-    #[inline(always)]
-    fn upper_area(self, exit: Crossing) -> i32 {
-        use Crossing::{Bottom, Diagonal, Left, Right, Top};
-        // A diagonal goes through a corner on the circle. Entering through the top-right corner, all the right edge
-        // is inside. Leaving through the bottom-left corner, none of the left edge is.
-        let entry = if let Diagonal = self {
-            Right(0, 0, SIDE)
-        } else {
-            self
-        };
-        let exit = if let Diagonal = exit {
-            Left(0, 0, 0)
-        } else {
-            exit
-        };
-        match (entry, exit) {
-            (Right(.., a), Left(.., b)) | (Top(.., a), Bottom(.., b)) => {
-                doubled_trapezoid_area(a, b)
-            }
-            // Only the bottom-right corner inside.
-            (Right(.., a), Bottom(.., b)) => doubled_triangle_area(a, b),
-            // All but the top-left corner inside.
-            (Top(.., a), Left(.., b)) => DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE - b),
-            _ => unreachable!(
-                "the upper half enters through the top or right edge and leaves through the left or bottom"
-            ),
-        }
-    }
 }
 
 /// A doubled area in 1/SIDE² as a coverage, rounded like `emit_cell`, and clamped below 255: a pixel the walk visits
@@ -139,28 +109,52 @@ impl Cursor {
             forward_difference(x, offset.x),
             forward_difference(y, offset.y),
         );
-        let (bottom_left, innermost) = match entry {
-            Crossing::Right(_, bottom_right, _) => (bottom_right - dx, false),
-            Crossing::Top(top_left, ..) => (top_left + dy, true),
-            Crossing::Diagonal => (dy - dx, true), // entered at the top-right corner, where F is 0
+        let (bottom_left, innermost, a, from_top) = match entry {
+            Crossing::Right(_, bottom_right, a) => (bottom_right - dx, false, a, false),
+            Crossing::Top(top_left, _, a) => (top_left + dy, true, a, true),
+            Crossing::Diagonal => (dy - dx, true, SIDE, false), // entered at the top-right corner, where F is 0
             Crossing::Left(..) | Crossing::Bottom(..) => unreachable!(),
         };
-        let exit = if bottom_left < 0 {
+        let (exit, doubled_area) = if bottom_left < 0 {
             let top_left = bottom_left - dy;
-            Crossing::Left(bottom_left, top_left, inside(bottom_left, top_left))
+            let b = inside(bottom_left, top_left);
+            let exit = Crossing::Left(bottom_left, top_left, b);
+            let doubled_area = if from_top {
+                DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE - b)
+            } else {
+                doubled_trapezoid_area(a, b)
+            };
+            (exit, doubled_area)
         } else if bottom_left == 0 && doubled(y + 1, offset.y) != 0 {
             // The bottom-left corner is exactly on the circle, and not on the horizontal axis. The pixels on the
             // other sides of the corner are covered completely or not at all, so go through the corner.
             // (On the horizontal axis the circle is vertical, and the next pixel down is cut.)
-            Crossing::Diagonal
+            let exit = Crossing::Diagonal;
+            let doubled_area = if from_top {
+                DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE)
+            } else {
+                doubled_trapezoid_area(a, 0)
+            };
+            (exit, doubled_area)
         } else {
             let bottom_right = bottom_left + dx;
-            Crossing::Bottom(bottom_right, bottom_left, inside(bottom_right, bottom_left))
+            let b = inside(bottom_right, bottom_left);
+            let exit = Crossing::Bottom(bottom_right, bottom_left, b);
+            let doubled_area = if from_top {
+                doubled_trapezoid_area(a, b)
+            } else {
+                doubled_triangle_area(a, b)
+            };
+            (exit, doubled_area)
         };
         let point = self.point;
         self.point = exit.next_pixel(point);
-        let next = (self.point.y < offset.y).then(|| exit.across());
-        let coverage = coverage(entry.upper_area(exit));
+        let next = if self.point.y < offset.y {
+            Some(exit.across())
+        } else {
+            None
+        };
+        let coverage = coverage(doubled_area);
         (
             Step {
                 point,
