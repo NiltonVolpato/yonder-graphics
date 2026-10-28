@@ -42,15 +42,14 @@ fn inside(f_inside: i32, edge: i32) -> i32 {
 /// way, and F = 4 * (distance^2 - radius^2) = dx^2 + dy^2 - diameter^2 at a corner.
 #[derive(Clone, Copy)]
 struct Cursor {
-    point: Point,
-    /// Per axis, 1 if the center is in the middle of a pixel, 0 if it is on a pixel edge. Usually both are equal; a
-    /// circle in a box that isn't square can have one of each.
-    center_offset: Point,
+    point: (i32, i32),
+    dx: i32,
+    dy: i32,
     /// F at the pixel's bottom-left corner. The sign of this value determines whether the circle exits Left (< 0),
     /// Bottom (> 0), or diagonally through the corner (== 0).
     bottom_left: i32,
     /// How much of the entry edge is inside the circle, in 1/SIDE.
-    a: i32,
+    edge_inside: i32,
     /// True if entered from above (or diagonal): this pixel is the innermost of its row.
     innermost: bool,
     /// True if entered from the top edge.
@@ -61,23 +60,22 @@ impl Cursor {
     /// The first pixel, in the top row, on the vertical axis or just left of it, and the crossing where the circle
     /// enters it: its right edge. The only place that multiplies.
     fn first(diameter: i32, center_offset: Point) -> Self {
-        let point = Point::new(
-            center_offset.x - 1,
-            -((diameter as i16 + 1 - center_offset.y) / 2),
-        );
-        let right = doubled(point.x + 1, center_offset.x);
-        let top = doubled(point.y, center_offset.y);
+        let (offset_x, offset_y) = (i32::from(center_offset.x), i32::from(center_offset.y));
+        let point = (offset_x - 1, -((diameter + 1 - offset_y) / 2));
+        let right = doubled(point.0 + 1, offset_x);
+        let top = doubled(point.1, offset_y);
         let top_right = right * right + top * top - diameter * diameter;
-        let dy = forward_difference(point.y, center_offset.y);
+        let dy = forward_difference(point.1, offset_y);
         let bottom_right = top_right + dy;
-        let dx = forward_difference(point.x, center_offset.x);
+        let dx = forward_difference(point.0, offset_x);
         let bottom_left = bottom_right - dx;
-        let a = inside(bottom_right, dy);
+        let edge_inside = inside(bottom_right, dy);
         Self {
             point,
-            center_offset,
+            dx,
+            dy,
             bottom_left,
-            a,
+            edge_inside,
             innermost: false,
             from_top: false,
         }
@@ -89,58 +87,58 @@ impl Cursor {
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     #[cfg_attr(feature = "no-inline", inline(never))]
     fn step(&mut self) -> Option<Step> {
-        if self.point.y >= self.center_offset.y {
+        if self.dy > 0 {
             return None;
         }
 
         let point = self.point;
         let innermost = self.innermost;
-        let offset = self.center_offset;
 
         let coverage = if self.bottom_left < 0 {
-            let dy = forward_difference(point.y, offset.y);
-            let b = inside(self.bottom_left, dy);
+            let b = inside(self.bottom_left, self.dy);
             let cov = if self.from_top {
-                inverted_triangle_coverage(SIDE - self.a, SIDE - b)
+                inverted_triangle_coverage(SIDE - self.edge_inside, SIDE - b)
             } else {
-                trapezoid_coverage(self.a, b)
+                trapezoid_coverage(self.edge_inside, b)
             };
-            self.point.x -= 1;
-            self.bottom_left -= forward_difference(self.point.x, offset.x);
+            self.point.0 -= 1;
+            self.dx -= 8;
+            self.bottom_left -= self.dx;
             self.innermost = false;
             self.from_top = false;
-            self.a = b;
+            self.edge_inside = b;
             cov
-        } else if self.bottom_left == 0 && doubled(point.y + 1, offset.y) != 0 {
+        } else if self.bottom_left == 0 && self.dy != -4 {
             // The bottom-left corner is exactly on the circle, and not on the horizontal axis. The pixels on the
             // other sides of the corner are covered completely or not at all, so go through the corner.
             // (On the horizontal axis the circle is vertical, and the next pixel down is cut.)
             let cov = if self.from_top {
-                inverted_triangle_coverage(SIDE - self.a, SIDE)
+                inverted_triangle_coverage(SIDE - self.edge_inside, SIDE)
             } else {
-                trapezoid_coverage(self.a, 0)
+                trapezoid_coverage(self.edge_inside, 0)
             };
-            self.point.x -= 1;
-            self.point.y += 1;
-            self.bottom_left = forward_difference(self.point.y, offset.y)
-                - forward_difference(self.point.x, offset.x);
+            self.point.0 -= 1;
+            self.point.1 += 1;
+            self.dx -= 8;
+            self.dy += 8;
+            self.bottom_left = self.dy - self.dx;
             self.innermost = true;
             self.from_top = false;
-            self.a = SIDE;
+            self.edge_inside = SIDE;
             cov
         } else {
-            let dx = forward_difference(point.x, offset.x);
-            let b = inside(self.bottom_left + dx, dx);
+            let b = inside(self.bottom_left + self.dx, self.dx);
             let cov = if self.from_top {
-                trapezoid_coverage(self.a, b)
+                trapezoid_coverage(self.edge_inside, b)
             } else {
-                triangle_coverage(self.a, b)
+                triangle_coverage(self.edge_inside, b)
             };
-            self.point.y += 1;
-            self.bottom_left += forward_difference(self.point.y, offset.y);
+            self.point.1 += 1;
+            self.dy += 8;
+            self.bottom_left += self.dy;
             self.innermost = true;
             self.from_top = true;
-            self.a = b;
+            self.edge_inside = b;
             cov
         };
 
@@ -154,21 +152,21 @@ impl Cursor {
 
 /// Corner coordinate `coord` as a distance from the center, in half pixels.
 #[inline(always)]
-fn doubled(coord: i16, center_offset: i16) -> i32 {
-    2 * i32::from(coord) - i32::from(center_offset)
+fn doubled(coord: i32, center_offset: i32) -> i32 {
+    2 * coord - center_offset
 }
 
 /// How much F grows when a corner moves from coordinate `coord` to `coord + 1`, along either axis. It does not depend
 /// on the other coordinate. This is how the walk gets from one corner of a pixel to the next: one add.
 #[inline(always)]
-fn forward_difference(coord: i16, center_offset: i16) -> i32 {
+fn forward_difference(coord: i32, center_offset: i32) -> i32 {
     (doubled(coord, center_offset) + 1) << 2
 }
 
 /// One pixel of the walk.
 #[derive(Clone, Copy)]
 pub struct Step {
-    pub point: Point,
+    pub point: (i32, i32),
     pub coverage: u8,
     /// The innermost pixel of its row: the pixels from the next one to its mirror image are inside.
     pub innermost: bool,
@@ -189,7 +187,7 @@ pub fn walk_it(diameter: i32, center_offset: Point, mut visit: impl FnMut(Step))
             // One pixel with the whole circle inside it.
             const SINGLE_PIXEL_COVERAGE: u8 = ((SINGLE_PIXEL_AREA * 255 + FULL / 2) >> 16) as u8;
             visit(Step {
-                point: Point::new(0, 0),
+                point: (0, 0),
                 coverage: SINGLE_PIXEL_COVERAGE,
                 innermost: true,
             });
@@ -213,22 +211,25 @@ pub fn fill(circle: &Circle, mut emit: impl FnMut(Coverage)) {
         return;
     }
     let center_offset = Point::new((disk.center_x & 1) as i16, (disk.center_y & 1) as i16);
-    let (center_x, center_y) = ((disk.center_x >> 1) as i16, (disk.center_y >> 1) as i16);
+    let (center_x, center_y) = (disk.center_x >> 1, disk.center_y >> 1);
     let no_clip = (i32::MIN, i32::MAX);
 
     walk_it(disk.radius, center_offset, |step| {
-        let (x, y) = (center_x + step.point.x, center_y + step.point.y);
-        let mirror_x = disk.mirror(x.into());
-        let mirror_y = (disk.center_y - i32::from(y) - 1) as i16; // like `Disk::mirror`, vertically
-        let mut row = |y: i16| {
+        let (x, y) = (center_x + step.point.0, center_y + step.point.1);
+        let mirror_x = disk.mirror(x);
+        let mirror_y = disk.center_y - y - 1; // like `Disk::mirror`, vertically
+        let mut row = |y: i32| {
             if step.innermost {
-                span(i32::from(x) + 1, mirror_x, y, no_clip, &mut emit);
+                span(x + 1, mirror_x, y as i16, no_clip, &mut emit);
             }
             if step.coverage > 0 {
-                emit(Coverage::Boundary(Point::new(x, y), step.coverage));
-                if mirror_x != i32::from(x) {
+                emit(Coverage::Boundary(
+                    Point::new(x as i16, y as i16),
+                    step.coverage,
+                ));
+                if mirror_x != x {
                     emit(Coverage::Boundary(
-                        Point::new(mirror_x as i16, y),
+                        Point::new(mirror_x as i16, y as i16),
                         step.coverage,
                     ));
                 }
@@ -263,16 +264,16 @@ mod tests {
                     continue;
                 }
                 // F at the top-left corner of pixel (x, y), from scratch.
-                let f = |x: i16, y: i16| {
-                    let dx = 2 * i32::from(x) - i32::from(center_offset.x);
-                    let dy = 2 * i32::from(y) - i32::from(center_offset.y);
+                let f = |x: i32, y: i32| {
+                    let dx = 2 * x - i32::from(center_offset.x);
+                    let dy = 2 * y - i32::from(center_offset.y);
                     dx * dx + dy * dy - diameter * diameter
                 };
                 let mut points = Vec::new();
                 walk_it(diameter, center_offset, |step| points.push(step.point));
                 let context = format!("diameter {diameter}, center offset {center_offset:?}");
 
-                for &Point { x, y } in &points {
+                for &(x, y) in &points {
                     let corners = [f(x, y), f(x + 1, y), f(x, y + 1), f(x + 1, y + 1)];
                     assert!(
                         corners.iter().any(|&f| f < 0) && corners.iter().any(|&f| f >= 0),
@@ -280,7 +281,7 @@ mod tests {
                     );
                 }
                 for pair in points.windows(2) {
-                    let (dx, dy) = (pair[1].x - pair[0].x, pair[1].y - pair[0].y);
+                    let (dx, dy) = (pair[1].0 - pair[0].0, pair[1].1 - pair[0].1);
                     assert!(
                         (dy == 0 && dx.abs() == 1) || (dy == 1 && dx.abs() <= 1),
                         "{context}: bad move from {:?} to {:?}",
@@ -289,8 +290,16 @@ mod tests {
                     );
                 }
                 let (first, last) = (points[0], points[points.len() - 1]);
-                assert_eq!(first.x, center_offset.x - 1, "{context}: first pixel");
-                assert_eq!(last.y, center_offset.y - 1, "{context}: last pixel");
+                assert_eq!(
+                    first.0,
+                    i32::from(center_offset.x) - 1,
+                    "{context}: first pixel"
+                );
+                assert_eq!(
+                    last.1,
+                    i32::from(center_offset.y) - 1,
+                    "{context}: last pixel"
+                );
             }
         }
     }
