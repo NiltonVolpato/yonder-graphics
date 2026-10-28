@@ -7,3 +7,17 @@ exclude = ["esp32"]
 yonder-geometry = { path = "geometry" }
 yonder-raster = { path = "raster" }
 yonder-graphics = { path = "api" }
+
+[profile.bench]
+opt-level        = 3
+codegen-units    = 1
+debug            = "full"
+split-debuginfo  = "packed"
+lto              = "fat"
+
+[profile.release]
+opt-level        = 3
+codegen-units    = 1
+debug            = "full"
+split-debuginfo  = "packed"
+lto              = "fat"

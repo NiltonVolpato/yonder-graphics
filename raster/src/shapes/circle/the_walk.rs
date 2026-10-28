@@ -28,6 +28,8 @@ pub enum Crossing {
 
 impl Crossing {
     /// The same crossing seen from the pixel on the other side of the edge.
+    #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[cfg_attr(feature = "no-inline", inline(never))]
     pub fn across(self) -> Self {
         match self {
             Crossing::Top(f0, f1, inside) => Crossing::Bottom(f1, f0, inside),
@@ -40,6 +42,8 @@ impl Crossing {
 
     /// The pixel on the other side of this crossing, seen from `pixel`.
     /// A diagonal crossing leads one pixel down and to the left, the way the walk goes.
+    #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[cfg_attr(feature = "no-inline", inline(never))]
     pub fn next_pixel(self, pixel: Point) -> Point {
         let Point { x, y } = pixel;
         match self {
@@ -84,6 +88,8 @@ impl Crossing {
 
 /// A doubled area in 1/SIDE² as a coverage, rounded like `emit_cell`, and clamped below 255: a pixel the walk visits
 /// is never full.
+#[cfg_attr(not(feature = "no-inline"), inline(always))]
+#[cfg_attr(feature = "no-inline", inline(never))]
 fn coverage(doubled_area: i32) -> u8 {
     // FULL is 1 << 16.
     (((doubled_area >> 1) * 255 + FULL / 2) >> 16).min(254) as u8
@@ -125,6 +131,8 @@ impl Cursor {
     /// its left edge or its bottom edge, and F at the pixel's bottom-left corner tells which. Moves to the next pixel
     /// and returns the crossing to enter it, or `None` when that pixel's top edge is at or below the center. A pixel
     /// entered from above is the innermost of its row.
+    #[cfg_attr(not(feature = "no-inline"), inline(always))]
+    #[cfg_attr(feature = "no-inline", inline(never))]
     fn step(&mut self, entry: Crossing) -> (Step, Option<Crossing>) {
         let (Point { x, y }, offset) = (self.point, self.center_offset);
         let (dx, dy) = (
@@ -167,7 +175,8 @@ impl Cursor {
 /// How much of an edge is inside, in 1/SIDE, from F at its inside end and at its outside end, rounded to nearest.
 /// One division: unlike `round_div`, ties don't need to go to even, because an edge and its mirror image give the
 /// same values in the same order.
-#[inline(always)]
+#[cfg_attr(not(feature = "no-inline"), inline(always))]
+#[cfg_attr(feature = "no-inline", inline(never))]
 fn inside(f_inside: i32, f_outside: i32) -> i32 {
     let edge = f_inside - f_outside; // negative, like f_inside
     (f_inside * SIDE + (edge >> 1)) / edge

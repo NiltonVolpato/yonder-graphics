@@ -3,6 +3,9 @@ name = "yonder-raster"
 version = "0.0.0"
 edition = "2024"
 
+[features]
+no-inline = []
+
 [dependencies]
 yonder-geometry.workspace = true
 
