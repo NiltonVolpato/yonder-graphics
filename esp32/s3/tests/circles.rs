@@ -18,7 +18,7 @@ mod tests {
     use yonder_geometry::projective::PointT2;
     use yonder_geometry::screen::{BoundingBox, Point};
     use yonder_geometry::shapes::Circle;
-    use yonder_raster::{Coverage, Filled, Rasterizable, Stroked, walk_fill};
+    use yonder_raster::{walk_fill, Coverage, Filled, Rasterizable, Stroked};
 
     const ITERATIONS: u32 = 200;
 
@@ -64,7 +64,7 @@ mod tests {
         };
         let mut x: i32 = 0;
         let mut f: i32 = 0; // F(0, -r) = 0
-        // Top half: the chord widens. F(x + 1, y) = F(x, y) + 2x + 1.
+                            // Top half: the chord widens. F(x + 1, y) = F(x, y) + 2x + 1.
         for y in -r..=0 {
             while f + 2 * x + 1 <= 0 {
                 f += 2 * x + 1;
@@ -116,13 +116,11 @@ mod tests {
         let pixel_center =
             |radius| Circle::new(PointT2::pixel_center(Point::new(160, 120)), radius);
 
+        defmt::println!("");
         for radius in [4, 16, 64, 110] {
             let circle = black_box(lattice(radius));
             time("fill, lattice center, radius", radius, || {
                 consume(&Filled(&circle), screen)
-            });
-            time("walk fill, lattice center, radius", radius, || {
-                consume_walk(&circle)
             });
         }
         for radius in [4, 16, 64, 110] {
@@ -139,9 +137,6 @@ mod tests {
             let circle = black_box(pixel_center(radius));
             time("fill, pixel center, radius", radius, || {
                 consume(&Filled(&circle), screen)
-            });
-            time("walk fill, pixel center, radius", radius, || {
-                consume_walk(&circle)
             });
         }
         for width in [1, 8] {
@@ -160,6 +155,27 @@ mod tests {
         time("fill, radius 110, 16-row band, radius", 110, || {
             consume(&Filled(&circle), band)
         });
+    }
+
+    #[test]
+    fn circles_walk() {
+        let lattice = |radius| Circle::new(PointT2::new(160, 120, 1), radius);
+        let pixel_center =
+            |radius| Circle::new(PointT2::pixel_center(Point::new(160, 120)), radius);
+
+        defmt::println!("");
+        for radius in [4, 16, 64, 110] {
+            let circle = black_box(lattice(radius));
+            time("walk fill, lattice center, radius", radius, || {
+                consume_walk(&circle)
+            });
+        }
+        for radius in [16, 64] {
+            let circle = black_box(pixel_center(radius));
+            time("walk fill, pixel center, radius", radius, || {
+                consume_walk(&circle)
+            });
+        }
     }
 
     /// A clock or timer ring on a 390×390 screen: 16 px thick, outer edge 8 px from the
