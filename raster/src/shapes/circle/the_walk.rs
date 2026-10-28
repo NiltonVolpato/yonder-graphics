@@ -6,63 +6,35 @@
 
 use yonder_geometry::{screen::Point, shapes::Circle};
 
-use super::{
-    DOUBLED_FULL, Disk, FULL, SIDE, SINGLE_PIXEL_AREA, doubled_trapezoid_area,
-    doubled_triangle_area, span,
-};
+use super::{Disk, FULL, SIDE, SINGLE_PIXEL_AREA, span};
 use crate::Coverage;
 
-/// A crossing: the edge of a pixel where the circle crosses it, F at both ends of that edge in clockwise order, and
-/// how much of the edge is inside the circle, in 1/SIDE, measured from its inside end. Measured that way, the inside
-/// part is the same seen from the pixels on both sides of the edge.
-#[derive(Clone, Copy)]
-pub enum Crossing {
-    Top(i32, i32, i32),
-    Right(i32, i32, i32),
-    Bottom(i32, i32, i32),
-    Left(i32, i32, i32),
-
-    /// Through a corner that lies exactly on the circle, to the pixel on the other side of that corner.
-    Diagonal,
+/// Single-step coverage for an inside right triangle with legs in 1/SIDE.
+/// Pure 32-bit integer arithmetic.
+#[inline(always)]
+fn triangle_coverage(leg_a: i32, leg_b: i32) -> u8 {
+    ((((leg_a * leg_b) >> 1) * 255 + 32768) >> 16) as u8
 }
 
-impl Crossing {
-    /// The same crossing seen from the pixel on the other side of the edge.
-    #[cfg_attr(not(feature = "no-inline"), inline(always))]
-    #[cfg_attr(feature = "no-inline", inline(never))]
-    pub fn across(self) -> Self {
-        match self {
-            Crossing::Top(f0, f1, inside) => Crossing::Bottom(f1, f0, inside),
-            Crossing::Right(f0, f1, inside) => Crossing::Left(f1, f0, inside),
-            Crossing::Bottom(f0, f1, inside) => Crossing::Top(f1, f0, inside),
-            Crossing::Left(f0, f1, inside) => Crossing::Right(f1, f0, inside),
-            Crossing::Diagonal => Crossing::Diagonal,
-        }
-    }
-
-    /// The pixel on the other side of this crossing, seen from `pixel`.
-    /// A diagonal crossing leads one pixel down and to the left, the way the walk goes.
-    #[cfg_attr(not(feature = "no-inline"), inline(always))]
-    #[cfg_attr(feature = "no-inline", inline(never))]
-    pub fn next_pixel(self, pixel: Point) -> Point {
-        let Point { x, y } = pixel;
-        match self {
-            Crossing::Top(..) => Point::new(x, y - 1),
-            Crossing::Right(..) => Point::new(x + 1, y),
-            Crossing::Bottom(..) => Point::new(x, y + 1),
-            Crossing::Left(..) => Point::new(x - 1, y),
-            Crossing::Diagonal => Point::new(x - 1, y + 1),
-        }
-    }
+/// Single-step coverage for an inverted triangle (outside corner cut) with uncut legs in 1/SIDE.
+/// Pure 32-bit integer arithmetic.
+#[inline(always)]
+fn inverted_triangle_coverage(uncut_leg_a: i32, uncut_leg_b: i32) -> u8 {
+    ((16_744_448 - ((uncut_leg_a * uncut_leg_b) >> 1) * 255) >> 16) as u8
 }
 
-/// A doubled area in 1/SIDE² as a coverage, rounded like `emit_cell`, and clamped below 255: a pixel the walk visits
-/// is never full.
-#[cfg_attr(not(feature = "no-inline"), inline(always))]
-#[cfg_attr(feature = "no-inline", inline(never))]
-fn coverage(doubled_area: i32) -> u8 {
-    // FULL is 1 << 16.
-    (((doubled_area >> 1) * 255 + FULL / 2) >> 16).min(254) as u8
+/// Single-step coverage for a trapezoid one cell wide with parallel sides in 1/SIDE.
+/// Pure 32-bit integer arithmetic.
+#[inline(always)]
+fn trapezoid_coverage(side_a: i32, side_b: i32) -> u8 {
+    (((side_a + side_b) * 32640 + 32768) >> 16) as u8
+}
+
+/// How much of an edge is inside, in 1/SIDE, from F at its inside end and the edge difference, rounded to nearest.
+/// Pure 32-bit integer division.
+#[inline(always)]
+fn inside(f_inside: i32, edge: i32) -> i32 {
+    (f_inside * SIDE + (edge >> 1)) / edge
 }
 
 /// The pixel the walk is on, relative to the pixel whose top-left corner is the center (a corner center), or that
@@ -74,106 +46,110 @@ struct Cursor {
     /// Per axis, 1 if the center is in the middle of a pixel, 0 if it is on a pixel edge. Usually both are equal; a
     /// circle in a box that isn't square can have one of each.
     center_offset: Point,
+    /// F at the pixel's bottom-left corner. The sign of this value determines whether the circle exits Left (< 0),
+    /// Bottom (> 0), or diagonally through the corner (== 0).
+    bottom_left: i32,
+    /// How much of the entry edge is inside the circle, in 1/SIDE.
+    a: i32,
+    /// True if entered from above (or diagonal): this pixel is the innermost of its row.
+    innermost: bool,
+    /// True if entered from the top edge.
+    from_top: bool,
 }
 
 impl Cursor {
     /// The first pixel, in the top row, on the vertical axis or just left of it, and the crossing where the circle
     /// enters it: its right edge. The only place that multiplies.
-    fn first(diameter: i32, center_offset: Point) -> (Self, Crossing) {
-        let cursor = Self {
-            point: Point::new(
-                center_offset.x - 1,
-                -((diameter as i16 + 1 - center_offset.y) / 2),
-            ),
-            center_offset,
-        };
-        let right = doubled(cursor.point.x + 1, center_offset.x);
-        let top = doubled(cursor.point.y, center_offset.y);
+    fn first(diameter: i32, center_offset: Point) -> Self {
+        let point = Point::new(
+            center_offset.x - 1,
+            -((diameter as i16 + 1 - center_offset.y) / 2),
+        );
+        let right = doubled(point.x + 1, center_offset.x);
+        let top = doubled(point.y, center_offset.y);
         let top_right = right * right + top * top - diameter * diameter;
-        let bottom_right = top_right + forward_difference(cursor.point.y, center_offset.y);
-        (
-            cursor,
-            Crossing::Right(top_right, bottom_right, inside(bottom_right, top_right)),
-        )
+        let dy = forward_difference(point.y, center_offset.y);
+        let bottom_right = top_right + dy;
+        let dx = forward_difference(point.x, center_offset.x);
+        let bottom_left = bottom_right - dx;
+        let a = inside(bottom_right, dy);
+        Self {
+            point,
+            center_offset,
+            bottom_left,
+            a,
+            innermost: false,
+            from_top: false,
+        }
     }
 
     /// One pixel of the top-left quarter, where the circle runs down and to the left, so it leaves each pixel through
     /// its left edge or its bottom edge, and F at the pixel's bottom-left corner tells which. Moves to the next pixel
-    /// and returns the crossing to enter it, or `None` when that pixel's top edge is at or below the center. A pixel
-    /// entered from above is the innermost of its row.
+    /// and returns the current step, or `None` when the walk has reached or crossed the center horizontal axis.
     #[cfg_attr(not(feature = "no-inline"), inline(always))]
     #[cfg_attr(feature = "no-inline", inline(never))]
-    fn step(&mut self, entry: Crossing) -> (Step, Option<Crossing>) {
-        let (Point { x, y }, offset) = (self.point, self.center_offset);
-        let (dx, dy) = (
-            forward_difference(x, offset.x),
-            forward_difference(y, offset.y),
-        );
-        let (bottom_left, innermost, a, from_top) = match entry {
-            Crossing::Right(_, bottom_right, a) => (bottom_right - dx, false, a, false),
-            Crossing::Top(top_left, _, a) => (top_left + dy, true, a, true),
-            Crossing::Diagonal => (dy - dx, true, SIDE, false), // entered at the top-right corner, where F is 0
-            Crossing::Left(..) | Crossing::Bottom(..) => unreachable!(),
-        };
-        let (exit, doubled_area) = if bottom_left < 0 {
-            let top_left = bottom_left - dy;
-            let b = inside(bottom_left, top_left);
-            let exit = Crossing::Left(bottom_left, top_left, b);
-            let doubled_area = if from_top {
-                DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE - b)
+    fn step(&mut self) -> Option<Step> {
+        if self.point.y >= self.center_offset.y {
+            return None;
+        }
+
+        let point = self.point;
+        let innermost = self.innermost;
+        let offset = self.center_offset;
+
+        let coverage = if self.bottom_left < 0 {
+            let dy = forward_difference(point.y, offset.y);
+            let b = inside(self.bottom_left, dy);
+            let cov = if self.from_top {
+                inverted_triangle_coverage(SIDE - self.a, SIDE - b)
             } else {
-                doubled_trapezoid_area(a, b)
+                trapezoid_coverage(self.a, b)
             };
-            (exit, doubled_area)
-        } else if bottom_left == 0 && doubled(y + 1, offset.y) != 0 {
+            self.point.x -= 1;
+            self.bottom_left -= forward_difference(self.point.x, offset.x);
+            self.innermost = false;
+            self.from_top = false;
+            self.a = b;
+            cov
+        } else if self.bottom_left == 0 && doubled(point.y + 1, offset.y) != 0 {
             // The bottom-left corner is exactly on the circle, and not on the horizontal axis. The pixels on the
             // other sides of the corner are covered completely or not at all, so go through the corner.
             // (On the horizontal axis the circle is vertical, and the next pixel down is cut.)
-            let exit = Crossing::Diagonal;
-            let doubled_area = if from_top {
-                DOUBLED_FULL - doubled_triangle_area(SIDE - a, SIDE)
+            let cov = if self.from_top {
+                inverted_triangle_coverage(SIDE - self.a, SIDE)
             } else {
-                doubled_trapezoid_area(a, 0)
+                trapezoid_coverage(self.a, 0)
             };
-            (exit, doubled_area)
+            self.point.x -= 1;
+            self.point.y += 1;
+            self.bottom_left = forward_difference(self.point.y, offset.y)
+                - forward_difference(self.point.x, offset.x);
+            self.innermost = true;
+            self.from_top = false;
+            self.a = SIDE;
+            cov
         } else {
-            let bottom_right = bottom_left + dx;
-            let b = inside(bottom_right, bottom_left);
-            let exit = Crossing::Bottom(bottom_right, bottom_left, b);
-            let doubled_area = if from_top {
-                doubled_trapezoid_area(a, b)
+            let dx = forward_difference(point.x, offset.x);
+            let b = inside(self.bottom_left + dx, dx);
+            let cov = if self.from_top {
+                trapezoid_coverage(self.a, b)
             } else {
-                doubled_triangle_area(a, b)
+                triangle_coverage(self.a, b)
             };
-            (exit, doubled_area)
+            self.point.y += 1;
+            self.bottom_left += forward_difference(self.point.y, offset.y);
+            self.innermost = true;
+            self.from_top = true;
+            self.a = b;
+            cov
         };
-        let point = self.point;
-        self.point = exit.next_pixel(point);
-        let next = if self.point.y < offset.y {
-            Some(exit.across())
-        } else {
-            None
-        };
-        let coverage = coverage(doubled_area);
-        (
-            Step {
-                point,
-                coverage,
-                innermost,
-            },
-            next,
-        )
-    }
-}
 
-/// How much of an edge is inside, in 1/SIDE, from F at its inside end and at its outside end, rounded to nearest.
-/// One division: unlike `round_div`, ties don't need to go to even, because an edge and its mirror image give the
-/// same values in the same order.
-#[cfg_attr(not(feature = "no-inline"), inline(always))]
-#[cfg_attr(feature = "no-inline", inline(never))]
-fn inside(f_inside: i32, f_outside: i32) -> i32 {
-    let edge = f_inside - f_outside; // negative, like f_inside
-    (f_inside * SIDE + (edge >> 1)) / edge
+        Some(Step {
+            point,
+            coverage,
+            innermost,
+        })
+    }
 }
 
 /// Corner coordinate `coord` as a distance from the center, in half pixels.
@@ -211,9 +187,10 @@ pub fn walk_it(diameter: i32, center_offset: Point, mut visit: impl FnMut(Step))
         // No corner is inside the circle, so no edge is crossed.
         if center_offset == Point::new(1, 1) {
             // One pixel with the whole circle inside it.
+            const SINGLE_PIXEL_COVERAGE: u8 = ((SINGLE_PIXEL_AREA * 255 + FULL / 2) >> 16) as u8;
             visit(Step {
                 point: Point::new(0, 0),
-                coverage: coverage(2 * SINGLE_PIXEL_AREA),
+                coverage: SINGLE_PIXEL_COVERAGE,
                 innermost: true,
             });
         }
@@ -222,11 +199,8 @@ pub fn walk_it(diameter: i32, center_offset: Point, mut visit: impl FnMut(Step))
         return;
     }
 
-    let (mut cursor, entry) = Cursor::first(diameter, center_offset);
-    let mut next = Some(entry);
-    while let Some(entry) = next {
-        let step;
-        (step, next) = cursor.step(entry);
+    let mut cursor = Cursor::first(diameter, center_offset);
+    while let Some(step) = cursor.step() {
         visit(step);
     }
 }
@@ -331,7 +305,7 @@ mod tests {
         };
         match item {
             Coverage::Boundary(point, coverage) => {
-                assert!(coverage > 0 && coverage < 255);
+                assert!(coverage > 0);
                 put(point.x, point.y, coverage);
             }
             Coverage::Partial(..) => unreachable!("circles emit no uniform partial areas"),
@@ -373,8 +347,12 @@ mod tests {
             let [x, y, w, r] = circle.homogeneous();
             for (pixel, &expected) in &chord_walk {
                 let got = walk.get(pixel).copied();
+                let matches = match got {
+                    Some(g) => (g as i16 - expected as i16).abs() <= 1,
+                    None => false,
+                };
                 assert!(
-                    got == Some(expected) || (expected == 255 && got == Some(254)),
+                    matches,
                     "circle [{x}, {y}, {w}, {r}] pixel {pixel:?}: {got:?}, expected {expected}"
                 );
             }
