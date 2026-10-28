@@ -15,11 +15,11 @@ run:
     cargo run --release
 
 # Profiles the 390x390 ring on the device and symbolizes the hot spots.
-profile:
+profile *args:
     #!/usr/bin/env bash
     set -euo pipefail
     log=$(mktemp)
-    cargo test --release --test profile 2>&1 | tee "$log"
+    cargo test --release --test profile {{args}} 2>&1 | tee "$log"
     elf=$(sed -n 's|.*Running tests/profile.rs (\(.*\))$|\1|p' "$log" | tail -1)
     grep '\[PROFILE\] #' "$log" | python3 tools/symbolize_profile.py --by-function --elf "$elf"
     echo "Per-address detail: python3 tools/symbolize_profile.py --elf $elf < $log"
