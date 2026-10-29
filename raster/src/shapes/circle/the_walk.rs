@@ -194,58 +194,54 @@ pub fn fill(circle: &Circle, mut emit: impl FnMut(Coverage)) {
         return;
     }
 
+    let translate_y = |y: i32| (center_y + y) >> 1;
+    let translate_x = |x: i32| (center_x + x) >> 1;
+
     let mut cursor = Cursor::first(disk.radius, offset_x, offset_y);
     let mut from_top = false;
 
     while let Some(mut row) = cursor.next_row(&mut from_top) {
-        let y = (center_y + row.y) >> 1;
-        let mirror_y = (center_y - row.y - 2) >> 1;
+        let y_top = translate_y(row.y);
+        let y_bottom = translate_y(-row.y - 2);
 
-        let innermost_x = (center_x + row.innermost_x) >> 1;
-        let mirror_innermost_x = (center_x - row.innermost_x - 2) >> 1;
-        span(
-            innermost_x + 1,
-            mirror_innermost_x,
-            y as i16,
-            no_clip,
-            &mut emit,
-        );
-        if mirror_y != y {
-            span(
-                innermost_x + 1,
-                mirror_innermost_x,
-                mirror_y as i16,
-                no_clip,
-                &mut emit,
-            );
+        let mut x_left = translate_x(row.innermost_x) + 1;
+        let mut x_right = translate_x(-row.innermost_x - 2) - 1;
+        span(x_left, x_right + 1, y_top as i16, no_clip, &mut emit);
+        if row.y != -1 {
+            span(x_left, x_right + 1, y_bottom as i16, no_clip, &mut emit);
         }
 
+        let y_walk = row.y;
         for (pixel_x, coverage) in &mut row {
-            if coverage > 0 {
-                let x = (center_x + pixel_x) >> 1;
-                let mirror_x = (center_x - pixel_x - 2) >> 1;
+            x_left -= 1;
+            x_right += 1;
+
+            if coverage == 0 {
+                continue; // Skip truncation rounding errors for small coverage.
+            }
+
+            emit(Coverage::Boundary(
+                Point::new(x_left as i16, y_top as i16),
+                coverage,
+            ));
+            if pixel_x != -1 {
                 emit(Coverage::Boundary(
-                    Point::new(x as i16, y as i16),
+                    Point::new(x_right as i16, y_top as i16),
                     coverage,
                 ));
-                if mirror_x != x {
-                    emit(Coverage::Boundary(
-                        Point::new(mirror_x as i16, y as i16),
-                        coverage,
-                    ));
-                }
-                if mirror_y != y {
-                    emit(Coverage::Boundary(
-                        Point::new(x as i16, mirror_y as i16),
-                        coverage,
-                    ));
-                    if mirror_x != x {
-                        emit(Coverage::Boundary(
-                            Point::new(mirror_x as i16, mirror_y as i16),
-                            coverage,
-                        ));
-                    }
-                }
+            }
+            if y_walk == -1 {
+                continue;
+            }
+            emit(Coverage::Boundary(
+                Point::new(x_left as i16, y_bottom as i16),
+                coverage,
+            ));
+            if pixel_x != -1 {
+                emit(Coverage::Boundary(
+                    Point::new(x_right as i16, y_bottom as i16),
+                    coverage,
+                ));
             }
         }
     }
